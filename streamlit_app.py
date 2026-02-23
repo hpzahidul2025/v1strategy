@@ -683,7 +683,7 @@ Click **Start Scan** — it will now connect to Binance through your proxy ✅
             index=0,
             horizontal=True,
         )
-        mode_key = "15m" if "15M" in mode_choice else "5m"
+        mode_key = "15m" if mode_choice.startswith("15M") else "5m"
         cfg      = MODES[mode_key]
 
         col1, col2, col3, col4 = st.columns(4)
@@ -800,7 +800,7 @@ Click **Start Scan** — it will now connect to Binance through your proxy ✅
             ["15M  (Daily → 4H → 1H → 15M)", "5M  (4H → 1H → 15M → 5M)"],
             index=0, horizontal=True, key="dbg_mode"
         )
-        dbg_cfg = MODES["15m" if "15M" in dbg_mode else "5m"]
+        dbg_cfg = MODES["15m" if dbg_mode.startswith("15M") else "5m"]
 
         sym_input = st.text_input(
             "Symbol  (e.g. BTC  or  BTCUSDT  or  BTC/USDT:USDT)",
