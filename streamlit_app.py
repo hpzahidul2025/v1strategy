@@ -20,7 +20,7 @@ import ccxt.async_support as ccxt_async
 #  PAGE CONFIG  — wide layout, dark theme, mobile-friendly
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner",
+    page_title="Bybit Futures Scanner",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -419,14 +419,14 @@ async def stage3_worker(ex, sem, sym, direction, detail, pivot_ts, cfg):
 
 async def run_scan(cfg, progress_callback):
     """Run full pipeline; calls progress_callback(s1_done, total, s2_in, s3_in, results_so_far)."""
-    ex = ccxt_async.binanceusdm({
-        "enableRateLimit": True, "options": {"defaultType": "future"}})
+    ex = ccxt_async.bybit({
+        "enableRateLimit": True, "options": {"defaultType": "linear"}})
     try:
         await ex.load_markets()
         symbols = sorted([
             s for s, m in ex.markets.items()
             if m.get("type") == "swap" and m.get("active")
-            and m.get("quote") == "USDT" and ":USDT" in s
+            and m.get("linear") and m.get("quote") == "USDT"
         ])
         total = len(symbols)
         sem   = asyncio.Semaphore(MAX_CONCURRENT)
@@ -480,8 +480,8 @@ async def debug_single(sym_raw, cfg):
 
     logs = []
 
-    ex = ccxt_async.binanceusdm({
-        "enableRateLimit": True, "options": {"defaultType": "future"}})
+    ex = ccxt_async.bybit({
+        "enableRateLimit": True, "options": {"defaultType": "linear"}})
     try:
         await ex.load_markets()
         if sym not in ex.markets:
@@ -614,7 +614,7 @@ async def debug_single(sym_raw, cfg):
 # ══════════════════════════════════════════════════════════════════════
 
 def main():
-    st.title("⚡ Binance Futures Scanner")
+    st.title("⚡ Bybit Futures Scanner")
     st.caption("ULTRA-FAST v4 · Daily→4H→1H→15M / 4H→1H→15M→5M")
 
     # ── Tabs ──────────────────────────────────────────────────────────
@@ -651,7 +651,7 @@ def main():
             t0 = time.time()
 
             # Progress area
-            prog_bar    = st.progress(0, text="Connecting to Binance…")
+            prog_bar    = st.progress(0, text="Connecting to Bybit…")
             status_row  = st.empty()
             results_ph  = st.empty()
             summary_ph  = st.empty()
