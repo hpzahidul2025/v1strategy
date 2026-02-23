@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Binance Futures Scanner · ULTRA-FAST Edition v4
-Streamlit Web App — mobile-friendly for Android browser
+Streamlit Web App — OKX backend (no geo-block on cloud servers)
 """
 
 import streamlit as st
@@ -20,7 +20,7 @@ import ccxt.async_support as ccxt_async
 #  PAGE CONFIG  — wide layout, dark theme, mobile-friendly
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Bybit Futures Scanner",
+    page_title="OKX Futures Scanner",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -419,8 +419,8 @@ async def stage3_worker(ex, sem, sym, direction, detail, pivot_ts, cfg):
 
 async def run_scan(cfg, progress_callback):
     """Run full pipeline; calls progress_callback(s1_done, total, s2_in, s3_in, results_so_far)."""
-    ex = ccxt_async.bybit({
-        "enableRateLimit": True, "options": {"defaultType": "linear"}})
+    ex = ccxt_async.okx({
+        "enableRateLimit": True, "options": {"defaultType": "swap"}})
     try:
         await ex.load_markets()
         symbols = sorted([
@@ -480,12 +480,12 @@ async def debug_single(sym_raw, cfg):
 
     logs = []
 
-    ex = ccxt_async.bybit({
-        "enableRateLimit": True, "options": {"defaultType": "linear"}})
+    ex = ccxt_async.okx({
+        "enableRateLimit": True, "options": {"defaultType": "swap"}})
     try:
         await ex.load_markets()
         if sym not in ex.markets:
-            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Binance Futures"))
+            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on OKX Futures"))
             return logs
 
         pivot_tf = cfg["pivot_tf"]
@@ -614,8 +614,8 @@ async def debug_single(sym_raw, cfg):
 # ══════════════════════════════════════════════════════════════════════
 
 def main():
-    st.title("⚡ Bybit Futures Scanner")
-    st.caption("ULTRA-FAST v4 · Daily→4H→1H→15M / 4H→1H→15M→5M")
+    st.title("⚡ OKX Futures Scanner")
+    st.caption("ULTRA-FAST v4 · OKX USDT Perpetuals · Daily→4H→1H→15M / 4H→1H→15M→5M")
 
     # ── Tabs ──────────────────────────────────────────────────────────
     tab_scan, tab_debug = st.tabs(["🔍 Full Scan", "🐛 Debug Pair"])
@@ -651,7 +651,7 @@ def main():
             t0 = time.time()
 
             # Progress area
-            prog_bar    = st.progress(0, text="Connecting to Bybit…")
+            prog_bar    = st.progress(0, text="Connecting to OKX…")
             status_row  = st.empty()
             results_ph  = st.empty()
             summary_ph  = st.empty()
