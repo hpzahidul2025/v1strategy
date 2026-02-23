@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Binance Futures Scanner · ULTRA-FAST Edition v4
-Streamlit Web App — OKX backend (no geo-block on cloud servers)
+Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 """
 
 import streamlit as st
 import asyncio
 import time
 import sys
+import os
 
 import nest_asyncio
 nest_asyncio.apply()
@@ -16,11 +17,31 @@ import numpy as np
 import pandas as pd
 import ccxt.async_support as ccxt_async
 
+# ── Proxy helper ──────────────────────────────────────────────────────
+# Reads PROXY_URL from Streamlit secrets or env var.
+# Format expected:  http://username:password@host:port
+def _get_proxy() -> str:
+    try:
+        return st.secrets["PROXY_URL"]
+    except Exception:
+        return os.environ.get("PROXY_URL", "")
+
+def _make_exchange():
+    """Return a configured binanceusdm exchange, with proxy if available."""
+    proxy = _get_proxy()
+    cfg = {
+        "enableRateLimit": True,
+        "options": {"defaultType": "future"},
+    }
+    if proxy:
+        cfg["aiohttp_proxy"] = proxy
+    return ccxt_async.binanceusdm(cfg)
+
 # ══════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG  — wide layout, dark theme, mobile-friendly
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="OKX Futures Scanner",
+    page_title="Binance Futures Scanner",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -419,14 +440,13 @@ async def stage3_worker(ex, sem, sym, direction, detail, pivot_ts, cfg):
 
 async def run_scan(cfg, progress_callback):
     """Run full pipeline; calls progress_callback(s1_done, total, s2_in, s3_in, results_so_far)."""
-    ex = ccxt_async.okx({
-        "enableRateLimit": True, "options": {"defaultType": "swap"}})
+    ex = _make_exchange()
     try:
         await ex.load_markets()
         symbols = sorted([
             s for s, m in ex.markets.items()
             if m.get("type") == "swap" and m.get("active")
-            and m.get("linear") and m.get("quote") == "USDT"
+            and m.get("quote") == "USDT" and ":USDT" in s
         ])
         total = len(symbols)
         sem   = asyncio.Semaphore(MAX_CONCURRENT)
@@ -480,12 +500,11 @@ async def debug_single(sym_raw, cfg):
 
     logs = []
 
-    ex = ccxt_async.okx({
-        "enableRateLimit": True, "options": {"defaultType": "swap"}})
+    ex = _make_exchange()
     try:
         await ex.load_markets()
         if sym not in ex.markets:
-            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on OKX Futures"))
+            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Binance Futures"))
             return logs
 
         pivot_tf = cfg["pivot_tf"]
@@ -614,8 +633,8 @@ async def debug_single(sym_raw, cfg):
 # ══════════════════════════════════════════════════════════════════════
 
 def main():
-    st.title("⚡ OKX Futures Scanner")
-    st.caption("ULTRA-FAST v4 · OKX USDT Perpetuals · Daily→4H→1H→15M / 4H→1H→15M→5M")
+    st.title("⚡ Binance Futures Scanner")
+    st.caption("ULTRA-FAST v4 · Binance USDT Perpetuals · Daily→4H→1H→15M / 4H→1H→15M→5M")
 
     # ── Tabs ──────────────────────────────────────────────────────────
     tab_scan, tab_debug = st.tabs(["🔍 Full Scan", "🐛 Debug Pair"])
@@ -623,6 +642,40 @@ def main():
     # ══ TAB 1: FULL SCAN ══════════════════════════════════════════════
     with tab_scan:
         st.subheader("Scan all USDT Perpetuals")
+
+        # ── Proxy status banner ───────────────────────────────────────
+        _proxy = _get_proxy()
+        if _proxy:
+            _host = _proxy.split("@")[-1] if "@" in _proxy else _proxy.split("//")[-1]
+            st.success(f"✅ Proxy active — routing via **{_host}**  (Binance geo-block bypassed)", icon="🔒")
+        else:
+            st.error(
+                "⚠️ **No proxy configured.** Binance blocks Streamlit Cloud IPs.  "
+                "Add your proxy URL in **Streamlit Secrets** → key: `PROXY_URL`  "
+                "See the setup guide below ↓",
+                icon="🚫"
+            )
+            with st.expander("📋 How to add your free proxy (Webshare.io) — takes 3 minutes"):
+                st.markdown("""
+**Step 1 — Get a free proxy**
+1. Go to **https://proxy2.webshare.io/register** → create free account (no credit card)
+2. After login → go to **Proxy** → **List** tab
+3. You'll see 10 free proxies. Click **Download** → choose **Username:Password@IP:Port** format
+4. Pick any one proxy from the list — it looks like:  
+   `http://username:password@12.34.56.78:8080`
+
+**Step 2 — Add to Streamlit Secrets**
+1. Go to **https://share.streamlit.io** → click your app → **⋮ menu** → **Settings**
+2. Click **Secrets** tab
+3. Paste exactly this (replace with your real proxy values):
+```
+PROXY_URL = "http://youruser:yourpass@12.34.56.78:8080"
+```
+4. Click **Save** — app auto-restarts in ~30 seconds
+
+**Step 3 — Scan!**
+Click **Start Scan** — it will now connect to Binance through your proxy ✅
+""")
 
         mode_choice = st.radio(
             "Signal Timeframe",
@@ -651,7 +704,7 @@ def main():
             t0 = time.time()
 
             # Progress area
-            prog_bar    = st.progress(0, text="Connecting to OKX…")
+            prog_bar    = st.progress(0, text="Connecting to Binance…")
             status_row  = st.empty()
             results_ph  = st.empty()
             summary_ph  = st.empty()
