@@ -827,8 +827,7 @@ Click **Start Scan** — it will now connect to Binance through your proxy ✅
                 for _, row in df_final.iterrows():
                     txt_buffer.write(
                         f"{row['Scan Time']} | {row['Mode']} | "
-                        f"{row['Direction']} | {row['Symbol']} | {row['Detail']}
-"
+                        f"{row['Direction']} | {row['Symbol']} | {row['Detail']}\\n"
                     )
 
                 colB.download_button(
