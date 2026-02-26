@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Binance Futures Scanner · ULTRA-FAST Edition v4
+Binance Futures Scanner · ULTRA-FAST Edition v5
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+Fix v5: Pine Final Signal — added dir_main trend filter.
+  SELL signal only accepted when dir_main == -1 (bearish swing utama).
+  BUY  signal only accepted when dir_main ==  1 (bullish swing utama).
+  Matches TradingView: dots are hidden when price is on the wrong side
+  of the Swing Utama (TSL-50) main trend line.
 """
 
 import streamlit as st
@@ -288,7 +294,8 @@ def signals_tf(df, from_ts: int = 0, want_sell: bool = None):
             for i in range(1, end):
                 if dir_main[i] == -1 and dir_main[i - 1] != -1: last_p_bar = -1
                 if sell_pressure[i]: last_p_bar = i
-                if (i >= window_start and last_p_bar >= 0 and cdn[i] and bool(vf[i]) and below[i]):
+                if (i >= window_start and last_p_bar >= 0 and cdn[i] and bool(vf[i]) and below[i]
+                        and dir_main[i] == -1):  # Pine filter: only show SELL when swing main trend is bearish
                     found = True; break
                 if (cdn[i] and bool(vf[i]) and below[i] and last_p_bar >= 0):
                     last_p_bar = -1
@@ -296,7 +303,8 @@ def signals_tf(df, from_ts: int = 0, want_sell: bool = None):
             for i in range(1, end):
                 if dir_main[i] == 1 and dir_main[i - 1] != 1: last_p_bar = -1
                 if buy_pressure[i]: last_p_bar = i
-                if (i >= window_start and last_p_bar >= 0 and cup[i] and bool(vf[i]) and above[i]):
+                if (i >= window_start and last_p_bar >= 0 and cup[i] and bool(vf[i]) and above[i]
+                        and dir_main[i] == 1):   # Pine filter: only show BUY when swing main trend is bullish
                     found = True; break
                 if (cup[i] and bool(vf[i]) and above[i] and last_p_bar >= 0):
                     last_p_bar = -1
@@ -312,8 +320,8 @@ def signals_tf(df, from_ts: int = 0, want_sell: bool = None):
         if dir_main[i] == -1 and dir_main[i - 1] != -1: last_sell_p_bar = -1
         if buy_pressure[i]:  last_buy_p_bar  = i
         if sell_pressure[i]: last_sell_p_bar = i
-        fb = cup[i] and bool(vf[i]) and above[i] and last_buy_p_bar  >= 0
-        fs = cdn[i] and bool(vf[i]) and below[i] and last_sell_p_bar >= 0
+        fb = cup[i] and bool(vf[i]) and above[i] and last_buy_p_bar  >= 0 and dir_main[i] == 1
+        fs = cdn[i] and bool(vf[i]) and below[i] and last_sell_p_bar >= 0 and dir_main[i] == -1
         final_buy[i]  = fb
         final_sell[i] = fs
         if fb: last_buy_p_bar  = -1
