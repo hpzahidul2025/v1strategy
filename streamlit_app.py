@@ -1,13 +1,35 @@
 #!/usr/bin/env python3
 """
-Binance Futures Scanner · ULTRA-FAST Edition v5
+Binance Futures Scanner · ULTRA-FAST Edition v7
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-Fix v5: Pine Final Signal — added dir_main trend filter.
-  SELL signal only accepted when dir_main == -1 (bearish swing utama).
-  BUY  signal only accepted when dir_main ==  1 (bullish swing utama).
-  Matches TradingView: dots are hidden when price is on the wrong side
-  of the Swing Utama (TSL-50) main trend line.
+All fixes and optimisations from CLI v7–v12 ported:
+
+  CRITICAL FIXES (accuracy):
+  v6a  signals_tf guard max(60,120)→60 — fixed 5M false-negatives
+  v6b  sig_limit corrected: 15M 120→252 (48h+wup), 5M 350→156 (8h+wup)
+  v6c  mid_limit 5M 120→60, min_sig 300→80 (exact window fit)
+  v6d  tdi_tf 150→80 bars (ADX RMA(14) convergence needs 74 bars)
+
+  SPEED (no accuracy change):
+  v6e  Pivot age gate in S1 (48h/8h) — skips tdi_tf fetch for expired pivots
+  v6f  S3 split: mid_tf→BB check→sig_tf only on pass (~60% sig fetches saved)
+  v6g  fetch_raw for pivot_tf — 554 DataFrame builds skipped per scan
+  v6h  calc_adx: redundant np.array() casts removed
+  v6i  signals_tf: skip unused pressure side array per direction
+  v6j  want_sell bool replaces "SELL_S1"/"BUY_S1" string pipeline-wide
+
+  v7 SERIALISED EXPORT:
+  - Detail blob split into: Pivot_P, Prev_Pivot, ADX_Peak, ADX_End,
+    BB_TF, Signal_TF, Pivot_Age_h columns
+  - Results shown in tabbed view: All / BUY / SELL
+  - CSV: one column per field (structured, spreadsheet-ready)
+  - TXT: formatted report with header + per-signal block layout
+
+  UNCHANGED from v5:
+  - Proxy support (PROXY_URL secret)
+  - Streamlit UI layout, CSS, tabs, export
+  - Pine Final Signal dir_main filter (v5 feature retained)
 """
 
 import streamlit as st
@@ -47,7 +69,7 @@ def _make_exchange():
 #  PAGE CONFIG  — wide layout, dark theme, mobile-friendly
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner",
+    page_title="Binance Futures Scanner v7",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -157,20 +179,18 @@ def calc_kc(h, l, c):
     return b + KC_MULT * at, b - KC_MULT * at
 
 def calc_adx(h, l, c, p=ADX_LEN):
-    h_ = np.array(h, dtype=float)
-    l_ = np.array(l, dtype=float)
-    c_ = np.array(c, dtype=float)
-    tr  = np.maximum(h_[1:] - l_[1:],
-          np.maximum(np.abs(h_[1:] - c_[:-1]),
-                     np.abs(l_[1:] - c_[:-1])))
-    tr  = np.concatenate([[h_[0] - l_[0]], tr])
+    # v6: callers pass .values (float64) — redundant np.array() casts removed
+    tr  = np.maximum(h[1:] - l[1:],
+          np.maximum(np.abs(h[1:] - c[:-1]),
+                     np.abs(l[1:] - c[:-1])))
+    tr  = np.concatenate([[h[0] - l[0]], tr])
     dmp = np.where(
-        (h_[1:] - h_[:-1]) > (l_[:-1] - l_[1:]),
-        np.maximum(h_[1:] - h_[:-1], 0.0), 0.0)
+        (h[1:] - h[:-1]) > (l[:-1] - l[1:]),
+        np.maximum(h[1:] - h[:-1], 0.0), 0.0)
     dmp = np.concatenate([[0.0], dmp])
     dmm = np.where(
-        (l_[:-1] - l_[1:]) > (h_[1:] - h_[:-1]),
-        np.maximum(l_[:-1] - l_[1:], 0.0), 0.0)
+        (l[:-1] - l[1:]) > (h[1:] - h[:-1]),
+        np.maximum(l[:-1] - l[1:], 0.0), 0.0)
     dmm = np.concatenate([[0.0], dmm])
     s_tr  = _rma(tr,  p)
     s_dmp = _rma(dmp, p)
@@ -257,7 +277,7 @@ def calc_bb_continuation(c: np.ndarray, h: np.ndarray, l: np.ndarray,
     return sig
 
 def signals_tf(df, from_ts: int = 0, want_sell: bool = None):
-    if len(df) < max(SWING_UTAMA + 10, 120):
+    if len(df) < SWING_UTAMA + 10:   # v6 FIX: removed hardcoded 120 (caused 5M false-negatives when min_sig < 120)
         return False if want_sell is not None else (False, False)
     h  = df.high.values
     l  = df.low.values
@@ -270,12 +290,21 @@ def signals_tf(df, from_ts: int = 0, want_sell: bool = None):
     wt2 = calc_wt2(h, l, c, v)
     above = c > tsm
     below = c < tsm
-    raw_buy_p  = (wt2 < 20) & above
-    raw_sell_p = (wt2 > 80) & below
-    buy_pressure  = np.zeros(n, bool)
-    sell_pressure = np.zeros(n, bool)
-    buy_pressure[1:]  = raw_buy_p[1:]  & ~raw_buy_p[:-1]
-    sell_pressure[1:] = raw_sell_p[1:] & ~raw_sell_p[:-1]
+    # v6: only allocate the needed pressure side (want_sell=None debug mode allocates both)
+    if want_sell is None or not want_sell:
+        raw_buy_p    = (wt2 < 20) & above
+        buy_pressure = np.zeros(n, bool)
+        buy_pressure[1:] = raw_buy_p[1:] & ~raw_buy_p[:-1]
+    else:
+        buy_pressure = None
+
+    if want_sell is None or want_sell:
+        raw_sell_p    = (wt2 > 80) & below
+        sell_pressure = np.zeros(n, bool)
+        sell_pressure[1:] = raw_sell_p[1:] & ~raw_sell_p[:-1]
+    else:
+        sell_pressure = None
+
     cup = np.zeros(n, bool)
     cdn = np.zeros(n, bool)
     cup[1:] = (c[1:] > tsa[1:]) & (c[:-1] <= tsa[:-1])
@@ -360,6 +389,18 @@ async def fetch(ex, sem, sym, tf, limit):
             return pd.DataFrame()
 
 
+async def fetch_raw(ex, sem, sym, tf, limit):
+    # v6: raw numpy fetch — skips DataFrame build for S1 pivot_tf
+    async with sem:
+        try:
+            raw = await ex.fetch_ohlcv(sym, tf, limit=limit)
+            if not raw or len(raw) < 5:
+                return None
+            return np.array(raw, dtype=float)
+        except Exception:
+            return None
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  SCAN STAGES
 # ══════════════════════════════════════════════════════════════════════
@@ -367,73 +408,92 @@ async def fetch(ex, sem, sym, tf, limit):
 async def stage1_worker(ex, sem, sym, cfg):
     pivot_tf = cfg["pivot_tf"]
     tdi_tf   = cfg["tdi_tf"]
-    dp = await fetch(ex, sem, sym, pivot_tf, 7)
-    if dp.empty or len(dp) < 5: return None
-    pivot_ts = int(dp.iloc[-2]["ts"])
-    cur_P, prev_P, pp_P, ppp_P = pivot_chain(dp)
-    sell_pivot = cur_P < prev_P and prev_P > max(pp_P, ppp_P)
-    buy_pivot  = cur_P > prev_P and prev_P < min(pp_P, ppp_P)
-    if not sell_pivot and not buy_pivot: return None
-    da = await fetch(ex, sem, sym, tdi_tf, 150)
+
+    # v6: fetch_raw returns numpy array — no DataFrame needed for pivot scalars
+    arr_p = await fetch_raw(ex, sem, sym, pivot_tf, 7)
+    if arr_p is None: return None
+
+    # arr_p columns: [ts, open, high, low, close, vol]  rows: [-1]=live [-2]=cur
+    pivot_ts = int(arr_p[-2, 0])
+    def _hlc3(row): return (row[2] + row[3] + row[4]) / 3.0
+    cur_P  = _hlc3(arr_p[-2]);  prev_P = _hlc3(arr_p[-3])
+    pp_P   = _hlc3(arr_p[-4]);  ppp_P  = _hlc3(arr_p[-5])
+
+    # v6: bool want_sell replaces direction string
+    if   cur_P < prev_P and prev_P > max(pp_P, ppp_P): want_sell = True
+    elif cur_P > prev_P and prev_P < min(pp_P, ppp_P): want_sell = False
+    else: return None
+
+    # v6 (v11 port): pivot age gate — skip tdi_tf fetch for expired pivots
+    is_5m_s1  = tdi_tf == "1h"
+    max_age   = (8 * 3600 * 1000) if is_5m_s1 else (48 * 3600 * 1000)
+    if int(time.time() * 1000) - pivot_ts > max_age: return None
+
+    # v6 (v9 port): tdi_tf 150→80 bars (ADX RMA(14) needs 74 bars minimum)
+    da = await fetch(ex, sem, sym, tdi_tf, 80)
     if da.empty or len(da) < ADX_LEN * 2: return None
-    adx_arr = calc_adx(da.high.values, da.low.values, da.close.values)
-    pp_P_ts  = int(dp.iloc[-4]["ts"])
-    piv4_ts  = int(dp.iloc[-1]["ts"])
+
+    adx_arr      = calc_adx(da.high.values, da.low.values, da.close.values)
+    pp_P_ts      = int(arr_p[-4, 0])
+    piv4_ts      = int(arr_p[-1, 0])
     ts_vals      = da["ts"].values.astype(np.int64)
     window_mask  = (ts_vals >= pp_P_ts) & (ts_vals <= piv4_ts)
     adx_window   = adx_arr[window_mask]
     valid_window = adx_window[~np.isnan(adx_window)]
     if len(valid_window) == 0: return None
+
     adx_ever_above    = bool(np.any(valid_window > ADX_TH))
     adx_at_window_end = float(valid_window[-1])
-    adx_end_above     = adx_at_window_end > ADX_TH
-    if not (adx_ever_above and adx_end_above): return None
-    adx_peak  = float(np.nanmax(valid_window))
-    direction = "SELL_S1" if sell_pivot else "BUY_S1"
+    if not (adx_ever_above and adx_at_window_end > ADX_TH): return None
+
+    adx_peak = float(np.nanmax(valid_window))
     det = (f"P={cur_P:.5f} "
-           f"{'prev_peak' if sell_pivot else 'prev_trough'}={prev_P:.5f} "
+           f"{'prev_peak' if want_sell else 'prev_trough'}={prev_P:.5f} "
            f"ADX_peak={adx_peak:.1f} ADX_end={adx_at_window_end:.1f}")
-    return (direction, sym, det, pivot_ts, da)
+    return (want_sell, sym, det, pivot_ts, da)
 
 
-def stage2_worker(sym, direction, detail, pivot_ts, da):
+def stage2_worker(want_sell, sym, detail, pivot_ts, da):
+    # v6: want_sell bool replaces direction string
     if da.empty or len(da) < 60: return None
     bear_tdi, bull_tdi = tdi_state(da.close.values)
     u_t, l_t           = calc_kc(da.high.values, da.low.values, da.close.values)
     c_t                = float(da.close.iloc[-1])
-    n_t = len(da)
-    s15 = max(0, n_t - 16)
-    e15 = n_t - 1
-    sell_band_clean = bool(np.all(da.low.values[s15:e15]  > l_t[s15:e15]))
-    buy_band_clean  = bool(np.all(da.high.values[s15:e15] < u_t[s15:e15]))
-    if direction == "SELL_S1" and bear_tdi and c_t > l_t[-1] and sell_band_clean:
-        return (direction, sym, detail, pivot_ts)
-    if direction == "BUY_S1"  and bull_tdi and c_t < u_t[-1] and buy_band_clean:
-        return (direction, sym, detail, pivot_ts)
+    n_t = len(da); s15 = max(0, n_t - 16); e15 = n_t - 1
+    if want_sell:
+        if bear_tdi and c_t > l_t[-1] and bool(np.all(da.low.values[s15:e15] > l_t[s15:e15])):
+            return (want_sell, sym, detail, pivot_ts)
+    else:
+        if bull_tdi and c_t < u_t[-1] and bool(np.all(da.high.values[s15:e15] < u_t[s15:e15])):
+            return (want_sell, sym, detail, pivot_ts)
     return None
 
 
-async def stage3_worker(ex, sem, sym, direction, detail, pivot_ts, cfg):
+async def stage3_worker(ex, sem, sym, want_sell, detail, pivot_ts, cfg):
+    # v6: want_sell bool; age gate already checked in S1
     mid_tf = cfg["mid_tf"]
     sig_tf = cfg["sig_tf"]
     is_5m_mode = sig_tf == "5m"
-    sig_limit  = 350 if is_5m_mode else 120
-    mid_limit  = 120 if is_5m_mode else 80
-    min_sig    = 300 if is_5m_mode else 120
-    dm, ds = await asyncio.gather(
-        fetch(ex, sem, sym, mid_tf, mid_limit),
-        fetch(ex, sem, sym, sig_tf, sig_limit),
-    )
+    # v6 (v8 port): correct limits — 15M sig=252(48h+wup) mid=80 | 5M sig=156(8h+wup) mid=60
+    sig_limit = 156 if is_5m_mode else 252
+    mid_limit =  60 if is_5m_mode else 80
+    min_sig   =  80   # both modes
+
+    # v6 (v11 port): S3 split — fetch mid_tf first, sig_tf only if BB passes
+    dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
     if dm.empty or len(dm) < BB_LEN + 10: return None
-    if ds.empty or len(ds) < min_sig: return None
-    want_sell = (direction == "SELL_S1")
+
     end      = len(dm) - 1
     bb_sig   = calc_bb_continuation(
         dm.close.values[:end], dm.high.values[:end], dm.low.values[:end],
         want_sell=want_sell)
     ts_mid   = dm.ts.values[:end].astype(np.int64)
     win_mask = ts_mid >= pivot_ts
-    if not bb_sig[win_mask].any(): return None
+    if not bb_sig[win_mask].any(): return None  # BB fail — sig_tf fetch saved
+
+    ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
+    if ds.empty or len(ds) < min_sig: return None
+
     has_signal = signals_tf(ds, from_ts=pivot_ts, want_sell=want_sell)
     if not has_signal: return None
     side = "SELL" if want_sell else "BUY"
@@ -471,20 +531,20 @@ async def run_scan(cfg, progress_callback):
             state["s1_done"] += 1
             if r1 is None:
                 return None
-            direction, sym, detail, pivot_ts, da = r1
+            want_sell, sym, detail, pivot_ts, da = r1  # v6: bool
             state["s2_in"] += 1
             # Stage 2
-            r2 = stage2_worker(sym, direction, detail, pivot_ts, da)
+            r2 = stage2_worker(want_sell, sym, detail, pivot_ts, da)
             if r2 is None:
                 return None
-            direction, sym, detail, pivot_ts = r2
+            want_sell, sym, detail, pivot_ts = r2
             state["s3_in"] += 1
             # Stage 3
-            r3 = await stage3_worker(ex, sem, sym, direction, detail, pivot_ts, cfg)
+            r3 = await stage3_worker(ex, sem, sym, want_sell, detail, pivot_ts, cfg)
             if r3:
                 side, sym2, det2, _ = r3
-                if side == "BUY":  state["buy"].append((sym2, det2))
-                else:              state["sell"].append((sym2, det2))
+                if side == "BUY":  state["buy"].append((sym2, det2, r3[3]))
+                else:              state["sell"].append((sym2, det2, r3[3]))
             return r3
 
         # Batch into chunks so we can update progress
@@ -523,7 +583,7 @@ async def debug_single(sym_raw, cfg):
 
         dp, da = await asyncio.gather(
             fetch(ex, sem, sym, pivot_tf, 7),
-            fetch(ex, sem, sym, tdi_tf,  150),
+            fetch(ex, sem, sym, tdi_tf,   80),  # v6: 150→80 (ADX needs 74 bars)
         )
 
         if dp.empty or len(dp) < 5:
@@ -601,19 +661,14 @@ async def debug_single(sym_raw, cfg):
 
         # Stage 3
         is_5m_mode = sig_tf == "5m"
-        sig_limit  = 350 if is_5m_mode else 120
-        mid_limit  = 120 if is_5m_mode else 80
-        min_sig    = 300 if is_5m_mode else 120
+        # v6 (v8 port): correct limits
+        sig_limit = 156 if is_5m_mode else 252
+        mid_limit =  60 if is_5m_mode else 80
+        min_sig   =  80
 
-        dm, ds = await asyncio.gather(
-            fetch(ex, sem, sym, mid_tf, mid_limit),
-            fetch(ex, sem, sym, sig_tf, sig_limit),
-        )
-
+        dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
         if dm.empty or len(dm) < BB_LEN + 10:
             logs.append(("S3 BB data", "❌ FAIL", f"Not enough {mid_tf} candles")); return logs
-        if ds.empty or len(ds) < min_sig:
-            logs.append(("S3 Sig data", "❌ FAIL", f"Not enough {sig_tf} candles")); return logs
 
         want_sell = direction == "SELL"
         end       = len(dm) - 1
@@ -626,6 +681,11 @@ async def debug_single(sym_raw, cfg):
         logs.append(("S3 BB Pullback", "✅ PASS" if bb_ok else "❌ FAIL",
             f"{int(bb_sig[win_mask].sum())} BB {direction} signal(s) in pivot window"))
         if not bb_ok: return logs
+
+        # v6 (v11 port): fetch sig_tf only after BB passes
+        ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
+        if ds.empty or len(ds) < min_sig:
+            logs.append(("S3 Sig data", "❌ FAIL", f"Not enough {sig_tf} candles")); return logs
 
         has_signal = signals_tf(ds, from_ts=pivot_ts, want_sell=want_sell)
         logs.append(("S3 Pine Final Signal", "✅ PASS" if has_signal else "❌ FAIL",
@@ -754,9 +814,9 @@ Click **Start Scan** — it will now connect to Binance through your proxy ✅
                 # Live partial results table
                 rows = (
                     [{"Direction": "🟢 BUY", "Symbol": sym, "Detail": det}
-                     for sym, det in state["buy"]] +
+                     for sym, det, _pts in state["buy"]] +
                     [{"Direction": "🔴 SELL", "Symbol": sym, "Detail": det}
-                     for sym, det in state["sell"]]
+                     for sym, det, _pts in state["sell"]]
                 )
                 if rows:
                     results_ph.dataframe(
@@ -784,44 +844,76 @@ Click **Start Scan** — it will now connect to Binance through your proxy ✅
                 f"Funnel: {total} → {state['s2_in']} → {state['s3_in']} → **{all_sigs} signals**"
             )
 
-            
-            # ─────────────────────────────────────────
-            # Final Results (Modern + Export)
-            # ─────────────────────────────────────────
+            # ─────────────────────────────────────────────────────────────
+            # Final Results — serialised columns + tabbed BUY/SELL view
+            # ─────────────────────────────────────────────────────────────
             import datetime
             import io
+            import re as _re
 
             st.markdown("---")
             st.subheader("📊 Final Signals")
 
             timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            now_ms    = int(time.time() * 1000)
+
+            def _parse_row(direction, sym, det, pivot_ts):
+                """Split the detail string into clean structured fields."""
+                p      = _re.search(r"P=([\d.]+)",                  det)
+                prev   = _re.search(r"prev_(?:peak|trough)=([\d.]+)", det)
+                adxpk  = _re.search(r"ADX_peak=([\d.]+)",            det)
+                adxend = _re.search(r"ADX_end=([\d.]+)",             det)
+                bb_m   = _re.search(r"(\w+)_BB_pullback",            det)
+                sig_m  = _re.search(r"\[(\w+) FinalSignal",          det)
+                age_h  = round((now_ms - pivot_ts) / 3_600_000, 1)
+                return {
+                    "Direction":   direction,
+                    "Symbol":      sym,
+                    "Pivot_P":     float(p.group(1))      if p      else "",
+                    "Prev_Pivot":  float(prev.group(1))   if prev   else "",
+                    "ADX_Peak":    float(adxpk.group(1))  if adxpk  else "",
+                    "ADX_End":     float(adxend.group(1)) if adxend else "",
+                    "BB_TF":       bb_m.group(1)          if bb_m   else "",
+                    "Signal_TF":   sig_m.group(1)         if sig_m  else "",
+                    "Pivot_Age_h": age_h,
+                    "Scan_Time":   timestamp,
+                    "Mode":        mode_key.upper(),
+                }
 
             if buy_results or sell_results:
-
                 all_rows = (
-                    [{"Direction": "BUY", "Symbol": sym, "Detail": det}
-                     for sym, det in buy_results] +
-                    [{"Direction": "SELL", "Symbol": sym, "Detail": det}
-                     for sym, det in sell_results]
+                    [_parse_row("BUY",  sym, det, pts) for sym, det, pts in buy_results] +
+                    [_parse_row("SELL", sym, det, pts) for sym, det, pts in sell_results]
                 )
-
                 df_final = pd.DataFrame(all_rows)
-                df_final.insert(0, "Scan Time", timestamp)
-                df_final.insert(1, "Mode", mode_key.upper())
 
-                st.dataframe(
-                    df_final,
-                    use_container_width=True,
-                    hide_index=True
-                )
+                # Columns shown in UI (Scan_Time / Mode go to export only)
+                display_cols = ["Direction", "Symbol", "Pivot_P", "Prev_Pivot",
+                                "ADX_Peak", "ADX_End", "BB_TF", "Signal_TF", "Pivot_Age_h"]
 
+                # ── Tabbed view: All / BUY / SELL ─────────────────────────
+                t_all, t_buy, t_sell = st.tabs([
+                    f"📋 All ({len(all_rows)})",
+                    f"🟢 BUY ({len(buy_results)})",
+                    f"🔴 SELL ({len(sell_results)})",
+                ])
+                with t_all:
+                    st.dataframe(df_final[display_cols],
+                                 use_container_width=True, hide_index=True)
+                with t_buy:
+                    df_b = df_final[df_final["Direction"] == "BUY"][display_cols]
+                    st.dataframe(df_b, use_container_width=True, hide_index=True) if not df_b.empty else st.info("No BUY signals.")
+                with t_sell:
+                    df_s = df_final[df_final["Direction"] == "SELL"][display_cols]
+                    st.dataframe(df_s, use_container_width=True, hide_index=True) if not df_s.empty else st.info("No SELL signals.")
+
+                # ── Export ────────────────────────────────────────────────
                 st.markdown("### ⬇️ Export Signals")
                 colA, colB = st.columns(2)
 
-                # CSV
+                # CSV — full structured columns, one column per field
                 csv_buffer = io.StringIO()
                 df_final.to_csv(csv_buffer, index=False)
-
                 colA.download_button(
                     label="📄 Download CSV",
                     data=csv_buffer.getvalue(),
@@ -830,14 +922,25 @@ Click **Start Scan** — it will now connect to Binance through your proxy ✅
                     use_container_width=True
                 )
 
-                # TXT
+                # TXT — formatted report layout
                 txt_buffer = io.StringIO()
-                for _, row in df_final.iterrows():
-                    txt_buffer.write(
-                        f"{row['Scan Time']} | {row['Mode']} | "
-                        f"{row['Direction']} | {row['Symbol']} | {row['Detail']}\\n"
-                    )
-
+                txt_buffer.write(f"BINANCE FUTURES SCANNER  —  {mode_key.upper()} MODE\n")
+                txt_buffer.write(f"Scan Time  : {timestamp}\n")
+                txt_buffer.write(f"Symbols    : {total}  |  Elapsed : {elapsed:.1f}s\n")
+                txt_buffer.write(f"Signals    : {len(buy_results)} BUY   |  {len(sell_results)} SELL\n")
+                txt_buffer.write("=" * 68 + "\n")
+                for direction, group in [("BUY", buy_results), ("SELL", sell_results)]:
+                    if not group:
+                        continue
+                    txt_buffer.write(f"\n{'─'*28} {direction} {'─'*28}\n")
+                    for sym, det, pts in group:
+                        r = _parse_row(direction, sym, det, pts)
+                        txt_buffer.write(
+                            f"  {r['Symbol']:<22}  Pivot={r['Pivot_P']}   Prev={r['Prev_Pivot']}\n"
+                            f"  {'':22}  ADX  peak={r['ADX_Peak']}  end={r['ADX_End']}  "
+                            f"Age={r['Pivot_Age_h']}h\n"
+                            f"  {'':22}  BB={r['BB_TF']}  Signal={r['Signal_TF']}\n"
+                        )
                 colB.download_button(
                     label="📝 Download TXT",
                     data=txt_buffer.getvalue(),
