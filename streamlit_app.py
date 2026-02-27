@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Binance Futures Scanner · ULTRA-FAST Edition v7
+Binance Futures Scanner · ULTRA-FAST Edition v8
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
 All fixes and optimisations from CLI v7–v12 ported:
@@ -18,6 +18,15 @@ All fixes and optimisations from CLI v7–v12 ported:
   v6h  calc_adx: redundant np.array() casts removed
   v6i  signals_tf: skip unused pressure side array per direction
   v6j  want_sell bool replaces "SELL_S1"/"BUY_S1" string pipeline-wide
+
+  v8 BUG FIXES (signal gap 26→2 root causes):
+  BUG A: signals_tf pressure arrays set to None crashed every S3
+         result silently — reverted [N] optimisation entirely.
+  BUG B: CHUNK=50 batching serialised symbol processing — later
+         batches started after pivot age gate clock had advanced,
+         causing valid pivots to be rejected as stale.
+         Fixed: all coroutines fire simultaneously (like v12).
+         progress_callback moved inside worker() for live UI updates.
 
   v7 SERIALISED EXPORT:
   - Detail blob split into: Pivot_P, Prev_Pivot, ADX_Peak, ADX_End,
@@ -69,7 +78,7 @@ def _make_exchange():
 #  PAGE CONFIG  — wide layout, dark theme, mobile-friendly
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v7",
+    page_title="Binance Futures Scanner v8",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -290,20 +299,16 @@ def signals_tf(df, from_ts: int = 0, want_sell: bool = None):
     wt2 = calc_wt2(h, l, c, v)
     above = c > tsm
     below = c < tsm
-    # v6: only allocate the needed pressure side (want_sell=None debug mode allocates both)
-    if want_sell is None or not want_sell:
-        raw_buy_p    = (wt2 < 20) & above
-        buy_pressure = np.zeros(n, bool)
-        buy_pressure[1:] = raw_buy_p[1:] & ~raw_buy_p[:-1]
-    else:
-        buy_pressure = None
-
-    if want_sell is None or want_sell:
-        raw_sell_p    = (wt2 > 80) & below
-        sell_pressure = np.zeros(n, bool)
-        sell_pressure[1:] = raw_sell_p[1:] & ~raw_sell_p[:-1]
-    else:
-        sell_pressure = None
+    # v8 BUG A FIX: always allocate both pressure arrays.
+    # The [N] optimisation set the unused side to None, but the scan-mode
+    # for-loop still reads sell_pressure[i] / buy_pressure[i] unconditionally,
+    # causing a TypeError that silently killed every S3 result.
+    raw_buy_p  = (wt2 < 20) & above
+    raw_sell_p = (wt2 > 80) & below
+    buy_pressure  = np.zeros(n, bool)
+    sell_pressure = np.zeros(n, bool)
+    buy_pressure[1:]  = raw_buy_p[1:]  & ~raw_buy_p[:-1]
+    sell_pressure[1:] = raw_sell_p[1:] & ~raw_sell_p[:-1]
 
     cup = np.zeros(n, bool)
     cdn = np.zeros(n, bool)
@@ -529,9 +534,10 @@ async def run_scan(cfg, progress_callback):
             # Stage 1
             r1 = await stage1_worker(ex, sem, sym, cfg)
             state["s1_done"] += 1
+            progress_callback(state)   # live update after every symbol completes S1
             if r1 is None:
                 return None
-            want_sell, sym, detail, pivot_ts, da = r1  # v6: bool
+            want_sell, sym, detail, pivot_ts, da = r1
             state["s2_in"] += 1
             # Stage 2
             r2 = stage2_worker(want_sell, sym, detail, pivot_ts, da)
@@ -547,12 +553,10 @@ async def run_scan(cfg, progress_callback):
                 else:              state["sell"].append((sym2, det2, r3[3]))
             return r3
 
-        # Batch into chunks so we can update progress
-        CHUNK = 50
-        for i in range(0, total, CHUNK):
-            batch = symbols[i:i + CHUNK]
-            await asyncio.gather(*[worker(s) for s in batch])
-            progress_callback(state)
+        # v8 BUG B FIX: all coroutines fire simultaneously.
+        # Semaphore(150) throttles API concurrency. progress_callback is called
+        # inside worker() after each S1 completes so the UI still updates live.
+        await asyncio.gather(*[worker(s) for s in symbols])
 
         return state
     finally:
