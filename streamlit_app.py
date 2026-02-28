@@ -1,6 +1,12 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v17
+Binance Futures Scanner - ULTRA-FAST Edition v18
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v18 UPDATES over v17:
+  FEAT: 12h / 24h time format toggle — persists via URL query param ?tf=
+  FEAT: Active time format shown as badge in header (🕐 12H / 24H)
+  FEAT: time_fmt threaded through all timestamp contexts (cards, table, CSV, TXT, Debug tab)
+  FEAT: Time Fmt line added to TXT export header
 
 v17 UPDATES over v16:
   CHORE: Version bump — all identifiers, page title, header badge, docstrings updated to v17
@@ -186,9 +192,14 @@ TZ_LABELS  = list(TIMEZONES.keys())
 TZ_DEFAULT = "UTC+0  — UTC / GMT"
 
 
-def _fmt_ts(ms: int, tz_h: float, tz_label: str) -> str:
-    """Convert a UTC epoch-millisecond timestamp to a local time string."""
-    import math
+TIME_FMTS   = ["24h", "12h"]
+TIME_FMT_DEFAULT = "24h"
+
+
+def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
+    """Convert a UTC epoch-millisecond timestamp to a local time string.
+    time_fmt: '24h' → HH:MM  |  '12h' → H:MM AM/PM
+    """
     total_min = int(tz_h * 60)
     delta = datetime.timedelta(minutes=total_min)
     dt    = datetime.datetime.utcfromtimestamp(ms / 1000) + delta
@@ -196,13 +207,15 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str) -> str:
     ah    = int(abs(tz_h))
     am    = int(round((abs(tz_h) - ah) * 60))
     tz_str = f"UTC{sign}{ah:02d}:{am:02d}" if am else f"UTC{sign}{ah}"
+    if time_fmt == "12h":
+        return dt.strftime(f"%Y-%m-%d %I:%M %p {tz_str}").replace(" 0", " ")
     return dt.strftime(f"%Y-%m-%d %H:%M {tz_str}")
 
 # ══════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v17",
+    page_title="Binance Futures Scanner v18",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1700,11 +1713,11 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
 #  DEBUG SINGLE SYMBOL
 # ══════════════════════════════════════════════════════════════════════
 
-async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> list:
+async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> list:
     """
     Debug a single symbol through all pipeline stages.
     v9j: delegates to shared stage workers — no duplicated logic.
-    v17: adds Stage 4 BOS/ChoCh validation.
+    v18: adds Stage 4 BOS/ChoCh validation.
     Returns list of (label, status, detail) tuples.
     """
     raw       = sym_raw.strip().upper().replace(" ", "")
@@ -1851,7 +1864,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         sig_times = ""
         if sig_ts_list:
             last_ts = sig_ts_list[-1]
-            sig_times = _fmt_ts(last_ts, tz_h, tz_label)
+            sig_times = _fmt_ts(last_ts, tz_h, tz_label, time_fmt)
         logs.append(("S3 Pine Final Signal", "✅ PASS" if has_signal else "❌ FAIL",
             f"{sig_tf.upper()} Final {direction} Signal in window: {has_signal}  |  "
             f"{n_sigs} signal(s)  |  ⏰ Latest: {sig_times}"))
@@ -1907,9 +1920,9 @@ def _run_async(coro):
 
 def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
                choch_status: str, now_ms: int, mode_key: str, timestamp: str,
-               tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> dict:
+               tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> dict:
     """
-    v17: Parse a result row into structured fields.
+    v18: Parse a result row into structured fields.
     choch_status: "valid" or "wait"
     tz_h: UTC offset in fractional hours for all timestamps
     """
@@ -1925,7 +1938,7 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
 
     # Signal bar time — apply user timezone
     if sig_ts:
-        sig_dt = _fmt_ts(int(sig_ts.group(1)), tz_h, tz_label)
+        sig_dt = _fmt_ts(int(sig_ts.group(1)), tz_h, tz_label, time_fmt)
     else:
         sig_dt = ""
 
@@ -1959,7 +1972,7 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     }
 
 
-def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> dict:
+def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> dict:
     """Parse detail string into card display fields."""
     import re as _re2
     adx    = _re2.search(r"ADX_(?:cur|peak|end)=([\d.]+)", det)
@@ -1986,7 +1999,7 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> 
         if age_h < 1:   age_str = f"{age_h*60:.0f}m"
         elif age_h < 24: age_str = f"{age_h:.1f}h"
         else:            age_str = f"{age_h/24:.1f}d"
-        sig_time = _fmt_ts(int(sig_ts.group(1)), tz_h, tz_label)
+        sig_time = _fmt_ts(int(sig_ts.group(1)), tz_h, tz_label, time_fmt)
     else:
         age_h = 0.0; age_str = "—"; sig_time = "—"
 
@@ -2016,12 +2029,12 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> 
 
 def _init_session():
     """Ensure all session_state keys exist on first load."""
-    # Persist timezone across refreshes via query params
+    # Persist timezone + time format across refreshes via query params
     _qp_tz = st.query_params.get("tz", None)
-    if _qp_tz and _qp_tz in TIMEZONES:
-        _tz_default = _qp_tz
-    else:
-        _tz_default = TZ_DEFAULT
+    _tz_default = _qp_tz if (_qp_tz and _qp_tz in TIMEZONES) else TZ_DEFAULT
+
+    _qp_tf = st.query_params.get("tf", None)
+    _tf_default = _qp_tf if (_qp_tf and _qp_tf in TIME_FMTS) else TIME_FMT_DEFAULT
 
     defaults = {
         "scan_done":    False,
@@ -2039,6 +2052,7 @@ def _init_session():
         "txt_fname":    "",
         "results_tab":  "all",
         "tz_key":       _tz_default,
+        "time_fmt":     _tf_default,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -2105,7 +2119,7 @@ def _sc_summary_html(total: int, elapsed: float, bv: int, bw: int,
 
 def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: str = "15m",
                        grid_cls: str = "sc-grid",
-                       tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> str:
+                       tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> str:
     """Compact cards: symbol | price | TF | signal time | direction."""
     if not entries:
         label = ("BUY" if is_buy else "SELL") + (" confirmed" if is_valid else " waiting")
@@ -2127,7 +2141,7 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
 
     cards = []
     for sym, det in entries:
-        p     = _parse_det_card(det, tz_h, tz_label)
+        p     = _parse_det_card(det, tz_h, tz_label, time_fmt)
         # Extract bare base name: "BERA/USDT:USDT" → "BERA"
         base  = sym.split("/")[0].replace("USDT", "").replace("BUSD", "").replace("USD", "")
         if not base:  # fallback if already bare
@@ -2146,14 +2160,14 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
 
 
 def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
-                              tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> str:
+                              tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> str:
     """Render All tab as two columns: Confirmed left, Waiting right."""
     # ── Confirmed column ──────────────────────────────────────────────
     confirmed_parts = []
     if bv_list:
-        confirmed_parts.append(_signal_cards_html(bv_list, True,  True,  mode_key, "sc-col-grid", tz_h, tz_label))
+        confirmed_parts.append(_signal_cards_html(bv_list, True,  True,  mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
     if sv_list:
-        confirmed_parts.append(_signal_cards_html(sv_list, False, True,  mode_key, "sc-col-grid", tz_h, tz_label))
+        confirmed_parts.append(_signal_cards_html(sv_list, False, True,  mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
     conf_body = "".join(confirmed_parts) if confirmed_parts else (
         '<div class="sc-empty" style="padding:1rem"><div class="ico" style="font-size:1.4rem">&#128269;</div>'
         '<p style="font-size:0.8rem">No confirmed signals</p></div>')
@@ -2168,9 +2182,9 @@ def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
     # ── Waiting column ────────────────────────────────────────────────
     waiting_parts = []
     if bw_list:
-        waiting_parts.append(_signal_cards_html(bw_list, True,  False, mode_key, "sc-col-grid", tz_h, tz_label))
+        waiting_parts.append(_signal_cards_html(bw_list, True,  False, mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
     if sw_list:
-        waiting_parts.append(_signal_cards_html(sw_list, False, False, mode_key, "sc-col-grid", tz_h, tz_label))
+        waiting_parts.append(_signal_cards_html(sw_list, False, False, mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
     wait_body = "".join(waiting_parts) if waiting_parts else (
         '<div class="sc-empty" style="padding:1rem"><div class="ico" style="font-size:1.4rem">&#9203;</div>'
         '<p style="font-size:0.8rem">No waiting signals</p></div>')
@@ -2188,12 +2202,13 @@ def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
 def main():
     _init_session()
 
-    # ── Timezone — load from session / query params ──────────────────
+    # ── Timezone + Time format — load from session / query params ──────
     tz_key   = st.session_state.get("tz_key", TZ_DEFAULT)
     tz_h     = TIMEZONES.get(tz_key, 0.0)
     sign_s   = "+" if tz_h >= 0 else "-"
     ah_s     = int(abs(tz_h)); am_s = int(round((abs(tz_h)-ah_s)*60))
     tz_short = f"UTC{sign_s}{ah_s:02d}:{am_s:02d}" if am_s else f"UTC{sign_s}{ah_s}"
+    time_fmt = st.session_state.get("time_fmt", TIME_FMT_DEFAULT)
 
     # ── Header ────────────────────────────────────────────────────────
     hdr_col, tz_col = st.columns([5, 3])
@@ -2213,10 +2228,11 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v17</span>
+    <span class="sc-badge blue">&#128640; v18</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
+    <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -2243,9 +2259,30 @@ def main():
             ah_s     = int(abs(tz_h)); am_s = int(round((abs(tz_h)-ah_s)*60))
             tz_short = f"UTC{sign_s}{ah_s:02d}:{am_s:02d}" if am_s else f"UTC{sign_s}{ah_s}"
             st.rerun()
+        # ── Time format toggle ─────────────────────────────────────────
         st.markdown(
-            f'<div style="font-size:0.68rem;color:#5a5a72;margin-top:2px;font-family:var(--mono)">'
-            f'Persists across page reloads</div>',
+            '<div class="sc-tz-label" style="margin-top:0.55rem">&#128336;&nbsp; Time Format</div>',
+            unsafe_allow_html=True)
+        tf_c1, tf_c2 = st.columns(2)
+        with tf_c1:
+            btn_24_type = "primary" if time_fmt == "24h" else "secondary"
+            if st.button("24h  (14:30)", key="btn_24h", use_container_width=True,
+                         type=btn_24_type):
+                if time_fmt != "24h":
+                    st.session_state["time_fmt"] = "24h"
+                    st.query_params["tf"] = "24h"
+                    st.rerun()
+        with tf_c2:
+            btn_12_type = "primary" if time_fmt == "12h" else "secondary"
+            if st.button("12h  (2:30 PM)", key="btn_12h", use_container_width=True,
+                         type=btn_12_type):
+                if time_fmt != "12h":
+                    st.session_state["time_fmt"] = "12h"
+                    st.query_params["tf"] = "12h"
+                    st.rerun()
+        st.markdown(
+            f'<div style="font-size:0.68rem;color:#5a5a72;margin-top:3px;font-family:var(--mono)">'
+            f'Timezone &amp; format persist across reloads</div>',
             unsafe_allow_html=True)
 
     tab_scan, tab_debug = st.tabs(["&#128269;  Full Scan", "&#128027;  Debug Symbol"])
@@ -2376,7 +2413,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
 
                 now_ms    = int(time.time() * 1000)
                 ts_int    = int(time.time())
-                timestamp = _fmt_ts(now_ms, tz_h, tz_key)
+                timestamp = _fmt_ts(now_ms, tz_h, tz_key, time_fmt)
 
                 all_results = (
                     [("BUY",  s, d, p, c) for s, d, p, c in buy_valid] +
@@ -2387,7 +2424,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
 
                 if all_results:
                     all_rows = [
-                        _parse_row(dir_, s, d, p, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key)
+                        _parse_row(dir_, s, d, p, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key, time_fmt)
                         for dir_, s, d, p, choch_st in all_results
                     ]
                     df_final = pd.DataFrame(all_rows)
@@ -2399,6 +2436,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
                     txt_buf.write(f"BINANCE FUTURES SCANNER  —  {mode_key.upper()} MODE\n")
                     txt_buf.write(f"Scan Time : {timestamp}\n")
                     txt_buf.write(f"Timezone  : {tz_key}\n")
+                    txt_buf.write(f"Time Fmt  : {time_fmt.upper()}\n")
                     txt_buf.write(f"Symbols   : {total}  |  Elapsed : {elapsed:.1f}s\n")
                     txt_buf.write(f"BUY  : {len(buy_valid)} VALID  {len(buy_wait)} WAIT\n")
                     txt_buf.write(f"SELL : {len(sell_valid)} VALID  {len(sell_wait)} WAIT\n")
@@ -2412,7 +2450,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
                         if not group: continue
                         txt_buf.write(f"\n{'─'*28} {group_label} {'─'*28}\n")
                         for sym, det, pts, choch_st in group:
-                            r = _parse_row(dir_, sym, det, pts, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key)
+                            r = _parse_row(dir_, sym, det, pts, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key, time_fmt)
                             txt_buf.write(
                                 f"  {r['Symbol']:<24}  Price={r['Signal_Price']}\n"
                                 f"  {'':24}  ADX peak={r['ADX_Peak']}  end={r['ADX_End']}  Age={r['Pivot_Age_h']}h\n"
@@ -2460,6 +2498,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
             total      = state["total"]
             r_tz_key   = st.session_state.get("tz_key", TZ_DEFAULT)
             r_tz_h     = TIMEZONES.get(r_tz_key, 0.0)
+            r_time_fmt = st.session_state.get("time_fmt", TIME_FMT_DEFAULT)
 
             bv_list = st.session_state["buy_valid"]
             bw_list = st.session_state["buy_wait"]
@@ -2492,20 +2531,20 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
                 with t_all:
                     if any([bv_list, sv_list, bw_list, sw_list]):
                         st.markdown(
-                            _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key_r, r_tz_h, r_tz_key),
+                            _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key_r, r_tz_h, r_tz_key, r_time_fmt),
                             unsafe_allow_html=True)
                     else:
                         st.markdown('<div class="sc-empty"><div class="ico">&#128269;</div><p>No signals.</p></div>',
                                     unsafe_allow_html=True)
 
                 with t_bv:
-                    st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
                 with t_bw:
-                    st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
                 with t_sv:
-                    st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
                 with t_sw:
-                    st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
 
                 # Full table + export in collapsible
                 if df_final is not None and not df_final.empty:
@@ -2582,9 +2621,10 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
         if dbg_go:
             with st.spinner(f"Running pipeline on {sym_input.strip().upper()}…"):
                 try:
-                    _dbg_tz_key = st.session_state.get("tz_key", TZ_DEFAULT)
-                    _dbg_tz_h   = TIMEZONES.get(_dbg_tz_key, 0.0)
-                    logs = _run_async(debug_single(sym_input, dbg_cfg, _dbg_tz_h, _dbg_tz_key))
+                    _dbg_tz_key  = st.session_state.get("tz_key", TZ_DEFAULT)
+                    _dbg_tz_h    = TIMEZONES.get(_dbg_tz_key, 0.0)
+                    _dbg_tf      = st.session_state.get("time_fmt", TIME_FMT_DEFAULT)
+                    logs = _run_async(debug_single(sym_input, dbg_cfg, _dbg_tz_h, _dbg_tz_key, _dbg_tf))
                 except Exception as e:
                     st.error(f"Error: {e}")
                     st.exception(e)
