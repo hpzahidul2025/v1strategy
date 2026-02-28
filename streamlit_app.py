@@ -469,140 +469,112 @@ st.markdown("""
     background: var(--surface);
     border: 1px solid var(--border2);
     border-radius: var(--radius);
-    padding: 1rem 1.4rem;
-    margin: 0.8rem 0;
-    display: grid;
-    grid-template-columns: auto 1px repeat(4,auto) 1px auto;
+    padding: 0.65rem 1.1rem;
+    margin: 0.5rem 0 0.7rem;
+    display: flex;
     align-items: center;
-    gap: 0 1.4rem;
-    box-shadow: 0 2px 16px rgba(0,0,0,0.35);
+    flex-wrap: wrap;
+    gap: 0.4rem 0.8rem;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
   }
   .sc-summary .ss-title {
-    font-weight: 800;
-    font-size: 1rem;
+    font-weight: 700;
+    font-size: 0.85rem;
     color: var(--text);
     white-space: nowrap;
   }
   .sc-summary .ss-title span { color: var(--green); }
-  .sc-summary .ss-div { background: var(--border2); width: 1px; height: 2.5rem; }
-  .sc-summary .ss-group { display: flex; flex-direction: column; align-items: center; gap: 2px; }
-  .sc-summary .ss-num {
+  .sc-summary .ss-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 9px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 700;
     font-family: var(--mono);
-    font-size: 1.6rem;
-    font-weight: 700;
-    line-height: 1;
-  }
-  .sc-summary .ss-lbl {
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     white-space: nowrap;
+    border: 1px solid;
   }
+  .ss-chip.g  { background: var(--green-bg);  color: var(--green); border-color: var(--green-border); }
+  .ss-chip.gd { background: rgba(0,230,118,0.04); color: #50c878; border-color: rgba(80,200,120,0.2); }
+  .ss-chip.r  { background: var(--red-bg);    color: var(--red);   border-color: var(--red-border); }
+  .ss-chip.rd { background: rgba(255,64,96,0.04); color: #e05060; border-color: rgba(200,80,96,0.2); }
   .sc-summary .ss-meta {
-    font-size: 0.78rem;
+    margin-left: auto;
+    font-size: 0.7rem;
     color: var(--muted);
     font-family: var(--mono);
     white-space: nowrap;
-    justify-self: end;
   }
   .sc-summary .ss-meta b { color: var(--gold); }
-  @media (max-width: 700px) {
-    .sc-summary {
-      grid-template-columns: 1fr 1fr;
-      gap: 0.6rem;
-    }
-    .sc-summary .ss-div { display: none; }
-    .sc-summary .ss-meta { grid-column: 1 / -1; justify-self: center; }
-  }
 
-  /* ── Signal cards (grid inside tab) ────────────────────────────── */
+  /* ── Signal cards ────────────────────────────────────────────────── */
   .sc-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 10px;
-    margin: 0.4rem 0 0.8rem;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 6px;
+    margin: 0.3rem 0 0.5rem;
   }
   .sc-card {
-    border-radius: var(--radius);
+    border-radius: 8px;
     border: 1px solid var(--border2);
     background: var(--surface);
-    padding: 0.9rem 1rem 0.75rem;
+    padding: 0.5rem 0.65rem 0.45rem;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    transition: border-color 0.15s, box-shadow 0.15s;
-    cursor: default;
-    user-select: text;
+    gap: 2px;
+    border-left-width: 3px;
   }
-  .sc-card:hover { box-shadow: 0 2px 16px rgba(0,0,0,0.45); }
-  .sc-card.buy   { border-left: 3px solid var(--green); }
-  .sc-card.buy:hover   { border-color: var(--green); }
-  .sc-card.sell  { border-left: 3px solid var(--red); }
-  .sc-card.sell:hover  { border-color: var(--red); }
-  .sc-card.wait  { opacity: 0.78; }
+  .sc-card.buy  { border-left-color: var(--green); }
+  .sc-card.sell { border-left-color: var(--red); }
+  .sc-card.wait { opacity: 0.75; }
 
-  .sc-card-top {
+  .sc-card-row1 {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
+    gap: 4px;
   }
   .sc-card-sym {
     font-family: var(--mono);
-    font-size: 1.1rem;
+    font-size: 0.95rem;
     font-weight: 700;
     color: var(--text);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
+    line-height: 1;
   }
   .sc-card-dir {
-    font-size: 0.72rem;
+    font-size: 0.65rem;
     font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
   }
-  .dir-buy-valid  { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-  .dir-buy-wait   { background: rgba(0,230,118,0.04); color: #50c878; border: 1px solid rgba(80,200,120,0.2); }
-  .dir-sell-valid { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-border); }
-  .dir-sell-wait  { background: rgba(255,64,96,0.04); color: #e05060; border: 1px solid rgba(200,80,96,0.2); }
+  .dir-buy  { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+  .dir-sell { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-border); }
+  .dir-buy-w  { background: rgba(0,230,118,0.04); color: #50c878; border: 1px solid rgba(80,200,120,0.18); }
+  .dir-sell-w { background: rgba(255,64,96,0.04); color: #e05060; border: 1px solid rgba(200,80,96,0.18); }
 
   .sc-card-price {
     font-family: var(--mono);
-    font-size: 1.35rem;
+    font-size: 0.95rem;
     font-weight: 700;
     color: var(--gold);
-    letter-spacing: -0.01em;
+    line-height: 1.1;
   }
-  .sc-card-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 10px;
-    margin-top: 2px;
-  }
-  .sc-tag {
+  .sc-card-info {
     font-family: var(--mono);
-    font-size: 0.72rem;
+    font-size: 0.67rem;
     color: var(--muted);
+    line-height: 1.3;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .sc-tag b { color: var(--text2); font-weight: 600; }
-  .sc-tag.ok  b { color: var(--green); }
-  .sc-tag.warn b { color: var(--gold); }
-  .sc-tag.err  b { color: var(--red); }
-
-  .sc-choch {
-    font-size: 0.72rem;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 6px;
-    display: inline-block;
-    margin-top: 2px;
-    align-self: flex-start;
-  }
-  .choch-valid { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-  .choch-wait  { background: var(--gold-bg);  color: var(--gold);  border: 1px solid var(--gold-border); }
+  .sc-card-info b { color: var(--text2); font-weight: 600; }
 
   /* ── Tab selector row (inner results tabs) ──────────────────────── */
   .sc-tab-row {
@@ -1774,78 +1746,56 @@ def _sc_summary_html(total: int, elapsed: float, bv: int, bw: int,
                      sv: int, sw: int, mode_key: str) -> str:
     all_s = bv + bw + sv + sw
     spd   = total / max(elapsed, 0.01)
-    return f"""
-<div class="sc-summary">
-  <div class="ss-title">✅ Scan <span>Complete</span></div>
-  <div class="ss-div"></div>
-  <div class="ss-group">
-    <div class="ss-num" style="color:var(--green)">{bv}</div>
-    <div class="ss-lbl" style="color:var(--green)">BUY ✅</div>
-  </div>
-  <div class="ss-group">
-    <div class="ss-num" style="color:#50c878">{bw}</div>
-    <div class="ss-lbl" style="color:#50c878">BUY ⏳</div>
-  </div>
-  <div class="ss-group">
-    <div class="ss-num" style="color:var(--red)">{sv}</div>
-    <div class="ss-lbl" style="color:var(--red)">SELL ✅</div>
-  </div>
-  <div class="ss-group">
-    <div class="ss-num" style="color:#e05060">{sw}</div>
-    <div class="ss-lbl" style="color:#e05060">SELL ⏳</div>
-  </div>
-  <div class="ss-div"></div>
-  <div class="ss-meta">
-    <b>{all_s}</b> signals &nbsp;·&nbsp; {total} symbols &nbsp;·&nbsp;
-    {elapsed:.1f}s &nbsp;·&nbsp; {spd:.0f} sym/s &nbsp;·&nbsp;
-    Mode: <b>{mode_key.upper()}</b>
-  </div>
-</div>"""
+    return (
+        f'<div class="sc-summary">'
+        f'<span class="ss-title">&#9989; Scan <span>Complete</span></span>'
+        f'<span class="ss-chip g">&#9650; BUY {bv}</span>'
+        f'<span class="ss-chip gd">&#9650; BUY WAIT {bw}</span>'
+        f'<span class="ss-chip r">&#9660; SELL {sv}</span>'
+        f'<span class="ss-chip rd">&#9660; SELL WAIT {sw}</span>'
+        f'<span class="ss-meta">'
+        f'<b>{all_s}</b> signals &middot; {total} sym &middot; '
+        f'{elapsed:.1f}s &middot; {spd:.0f}/s &middot; <b>{mode_key.upper()}</b>'
+        f'</span>'
+        f'</div>'
+    )
 
 
-def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool) -> str:
-    """Render a grid of signal cards from list of (sym, det) tuples."""
+def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: str = "15m") -> str:
+    """Compact cards: symbol | price | TF | signal time | direction."""
     if not entries:
         label = ("BUY" if is_buy else "SELL") + (" confirmed" if is_valid else " waiting")
-        return f'<div class="sc-empty"><div class="ico">🔎</div><p>No {label} signals.</p></div>'
+        return f'<div class="sc-empty"><div class="ico">&#128269;</div><p>No {label} signals.</p></div>'
 
-    dir_cls  = ("buy-valid"  if is_buy and is_valid  else
-                "buy-wait"   if is_buy               else
-                "sell-valid" if is_valid              else "sell-wait")
-    card_cls = "buy" if is_buy else "sell"
-    if not is_valid:
-        card_cls += " wait"
+    card_cls = ("buy" if is_buy else "sell") + ("" if is_valid else " wait")
+    tf_label  = mode_key.upper()   # "15M" or "5M"
 
-    dir_label = ("▲ BUY ✅" if is_buy and is_valid  else
-                 "▲ BUY ⏳" if is_buy               else
-                 "▼ SELL ✅" if is_valid             else "▼ SELL ⏳")
-    choch_cls   = "choch-valid" if is_valid else "choch-wait"
-    choch_label = "✅ ChoCh VALID" if is_valid else "⏳ ChoCh WAIT"
+    if is_buy and is_valid:
+        dir_cls, dir_txt = "dir-buy",    "&#9650; BUY"
+    elif is_buy:
+        dir_cls, dir_txt = "dir-buy-w",  "&#9650; BUY WAIT"
+    elif is_valid:
+        dir_cls, dir_txt = "dir-sell",   "&#9660; SELL"
+    else:
+        dir_cls, dir_txt = "dir-sell-w", "&#9660; SELL WAIT"
 
     cards = []
     for sym, det in entries:
-        p       = _parse_det_card(det)
-        sym_s   = sym.split("/")[0]
-        age_cls = "warn" if float(p["age_h"]) > 24 else ("ok" if float(p["age_h"]) < 8 else "")
-        adx_cls = "ok" if float(p["adx"]) > 35 else ("warn" if float(p["adx"]) > 25 else "err")
-        cards.append(f"""
-<div class="sc-card {card_cls}">
-  <div class="sc-card-top">
-    <span class="sc-card-sym">{sym_s}</span>
-    <span class="sc-card-dir dir-{dir_cls}">{dir_label}</span>
-  </div>
-  <div class="sc-card-price">{p['price']}</div>
-  <div class="sc-card-meta">
-    <span class="sc-tag {adx_cls}">ADX <b>{p['adx']}</b></span>
-    <span class="sc-tag">BB <b>{p['bb_tf']}</b></span>
-    <span class="sc-tag">Sig <b>{p['sig_tf']}</b></span>
-    <span class="sc-tag {age_cls}">Age <b>{p['age_str']}</b></span>
-    <span class="sc-tag">{p['n_sigs']} sig</span>
-  </div>
-  <span class="sc-choch {choch_cls}">{choch_label}</span>
-  <div class="sc-tag" style="margin-top:2px;font-size:0.7rem">⏰ {p['sig_time']}</div>
-</div>""")
-
+        p     = _parse_det_card(det)
+        # Extract bare base name: "BERA/USDT:USDT" → "BERA"
+        base  = sym.split("/")[0].replace("USDT", "").replace("BUSD", "").replace("USD", "")
+        if not base:  # fallback if already bare
+            base = sym.split("/")[0]
+        cards.append(
+            f'<div class="sc-card {card_cls}">'
+            f'<div class="sc-card-row1">'
+            f'<span class="sc-card-sym">{base}</span>'
+            f'<span class="sc-card-dir {dir_cls}">{dir_txt}</span>'
+            f'</div>'
+            f'<div class="sc-card-price">{p["price"]}</div>'
+            f'<div class="sc-card-info"><b>{tf_label}</b> &nbsp;{p["sig_time"]}</div>'
+            f'</div>'
+        )
     return f'<div class="sc-grid">{"".join(cards)}</div>'
 
 
@@ -2107,25 +2057,25 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
 
                 with t_all:
                     if bv_list:
-                        st.markdown(_signal_cards_html(bv_list, True, True),  unsafe_allow_html=True)
+                        st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r),  unsafe_allow_html=True)
                     if sv_list:
-                        st.markdown(_signal_cards_html(sv_list, False, True), unsafe_allow_html=True)
+                        st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r), unsafe_allow_html=True)
                     if bw_list:
-                        st.markdown(_signal_cards_html(bw_list, True, False), unsafe_allow_html=True)
+                        st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r), unsafe_allow_html=True)
                     if sw_list:
-                        st.markdown(_signal_cards_html(sw_list, False, False), unsafe_allow_html=True)
+                        st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r), unsafe_allow_html=True)
                     if not any([bv_list, sv_list, bw_list, sw_list]):
                         st.markdown('<div class="sc-empty"><div class="ico">&#128269;</div><p>No signals.</p></div>',
                                     unsafe_allow_html=True)
 
                 with t_bv:
-                    st.markdown(_signal_cards_html(bv_list, True, True),  unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r),  unsafe_allow_html=True)
                 with t_bw:
-                    st.markdown(_signal_cards_html(bw_list, True, False), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r), unsafe_allow_html=True)
                 with t_sv:
-                    st.markdown(_signal_cards_html(sv_list, False, True), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r), unsafe_allow_html=True)
                 with t_sw:
-                    st.markdown(_signal_cards_html(sw_list, False, False), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r), unsafe_allow_html=True)
 
                 # Full table + export in collapsible
                 if df_final is not None and not df_final.empty:
