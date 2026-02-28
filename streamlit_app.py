@@ -1,8 +1,23 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v12
+Binance Futures Scanner - ULTRA-FAST Edition v17
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v12 UPDATES over v11 (ported from CLI v13/v14/v15/v16):
+v17 UPDATES over v16:
+  CHORE: Version bump — all identifiers, page title, header badge, docstrings updated to v17
+
+v16 UPDATES over v15:
+  FEAT: Persistent timezone selector (32 zones, URL query-param storage)
+  FEAT: All timestamps (cards, table, CSV, TXT export) respect chosen timezone
+  FEAT: Redesigned header with gradient accent, glow effects, active TZ badge
+  FEAT: _fmt_ts() helper centralises all epoch→local-time formatting
+
+v15 UPDATES over v14 (UI overhaul):
+  FEAT: Hover/touch highlight on all signal chips and summary banner chips
+  FEAT: All-tab split into two columns — Confirmed (left) vs Waiting (right)
+  FEAT: Confirmed cards: vibrant gradient, glow box-shadow, pulse dot animation
+  FEAT: Wait cards: amber dashed border, dotted left stripe, muted amber palette
+
+v12 UPDATES over v11 (ported from CLI v13/v14/v15):
   FEAT: BOS/ChoCh validation on lower TF (Stage 4)
         15M mode → validates on 5M chart  (L/R = 10/10)
          5M mode → validates on 1M chart  (L/R = 10/10)
@@ -129,11 +144,65 @@ MODES = {
     },
 }
 
+
+# ══════════════════════════════════════════════════════════════════════
+#  TIMEZONES  — label → UTC offset in fractional hours
+# ══════════════════════════════════════════════════════════════════════
+TIMEZONES: dict[str, float] = {
+    "UTC+0  — UTC / GMT":          0.0,
+    "UTC+1  — London DST / CET":   1.0,
+    "UTC+2  — EET / CEST":         2.0,
+    "UTC+3  — Moscow / Istanbul":  3.0,
+    "UTC+3:30 — Tehran":           3.5,
+    "UTC+4  — Dubai / Baku":       4.0,
+    "UTC+4:30 — Kabul":            4.5,
+    "UTC+5  — Karachi / PKT":      5.0,
+    "UTC+5:30 — India / IST":      5.5,
+    "UTC+5:45 — Kathmandu / NPT":  5.75,
+    "UTC+6  — Dhaka / BST":        6.0,
+    "UTC+6:30 — Yangon / MMT":     6.5,
+    "UTC+7  — Bangkok / WIB":      7.0,
+    "UTC+8  — Singapore / HKT":    8.0,
+    "UTC+9  — Tokyo / KST":        9.0,
+    "UTC+9:30 — Adelaide / ACST":  9.5,
+    "UTC+10 — Sydney / AEST":     10.0,
+    "UTC+11 — Magadan / AEDT":    11.0,
+    "UTC+12 — Auckland / NZST":   12.0,
+    "UTC-1  — Azores / CVT":      -1.0,
+    "UTC-2  — South Georgia":     -2.0,
+    "UTC-3  — Brasília / ART":    -3.0,
+    "UTC-3:30 — Newfoundland":    -3.5,
+    "UTC-4  — EDT / AST":         -4.0,
+    "UTC-5  — CDT / EST":         -5.0,
+    "UTC-6  — MDT / CST":         -6.0,
+    "UTC-7  — PDT / MST":         -7.0,
+    "UTC-8  — PST / AKDT":        -8.0,
+    "UTC-9  — AKST / GIT":        -9.0,
+    "UTC-10 — Hawaii / HST":     -10.0,
+    "UTC-11 — Samoa / NUT":      -11.0,
+    "UTC-12 — IDLW / BIT":       -12.0,
+}
+TZ_LABELS  = list(TIMEZONES.keys())
+TZ_DEFAULT = "UTC+0  — UTC / GMT"
+
+
+def _fmt_ts(ms: int, tz_h: float, tz_label: str) -> str:
+    """Convert a UTC epoch-millisecond timestamp to a local time string."""
+    import math
+    total_min = int(tz_h * 60)
+    delta = datetime.timedelta(minutes=total_min)
+    dt    = datetime.datetime.utcfromtimestamp(ms / 1000) + delta
+    sign  = "+" if tz_h >= 0 else "-"
+    ah    = int(abs(tz_h))
+    am    = int(round((abs(tz_h) - ah) * 60))
+    tz_str = f"UTC{sign}{ah:02d}:{am:02d}" if am else f"UTC{sign}{ah}"
+    return dt.strftime(f"%Y-%m-%d %H:%M {tz_str}")
+
 # ══════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v12",
+    page_title="Binance Futures Scanner v17",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -345,50 +414,144 @@ st.markdown("""
 
   /* ── Header ────────────────────────────────────────────────────── */
   .sc-header {
-    background: linear-gradient(160deg, #0c0c18 0%, #0a0a14 60%, #0d0d1a 100%);
-    border: 1px solid var(--border2);
-    border-radius: var(--radius);
-    padding: 1.6rem 2rem 1.3rem;
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, #0a0a18 0%, #0c0c1e 45%, #07070f 100%);
+    border: 1px solid rgba(0,180,216,0.18);
+    border-radius: 14px;
+    padding: 1.5rem 1.8rem 1.3rem;
     margin-bottom: 1rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: 0.8rem;
-    box-shadow: 0 4px 32px rgba(0,0,0,0.5);
+    gap: 0.9rem;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6), 0 0 60px rgba(0,100,180,0.06) inset;
   }
-  .sc-header-left { display: flex; flex-direction: column; gap: 4px; }
+  /* Top-edge accent line */
+  .sc-header::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(0,180,216,0.6) 20%,
+      rgba(0,230,118,0.5) 50%,
+      rgba(0,180,216,0.6) 80%,
+      transparent 100%);
+    border-radius: 14px 14px 0 0;
+  }
+  /* Subtle radial glow behind logo */
+  .sc-header::after {
+    content: '';
+    position: absolute;
+    top: -40px; left: -40px;
+    width: 240px; height: 160px;
+    background: radial-gradient(ellipse, rgba(0,144,200,0.07) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .sc-header-left { display: flex; flex-direction: column; gap: 5px; z-index: 1; }
   .sc-header h1 {
     font-family: var(--mono);
-    font-size: 1.75rem;
+    font-size: 1.7rem;
     font-weight: 700;
     color: #fff;
     margin: 0;
-    letter-spacing: -0.03em;
+    letter-spacing: -0.04em;
     line-height: 1;
+    text-shadow: 0 0 30px rgba(0,180,216,0.25);
   }
-  .sc-header h1 span { color: var(--blue); }
+  .sc-header h1 .ico { font-style: normal; margin-right: 6px; }
+  .sc-header h1 .brand { color: #e8f4ff; }
+  .sc-header h1 .accent { color: var(--blue); }
   .sc-header .sub {
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: var(--muted);
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
     font-weight: 500;
+    line-height: 1;
   }
-  .sc-header-right { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .sc-header .sub .dot { margin: 0 5px; color: rgba(0,180,216,0.35); }
+  .sc-header-right {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+    z-index: 1;
+  }
   .sc-badge {
-    display: inline-block;
-    padding: 3px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 11px;
     border-radius: 20px;
     font-size: 0.72rem;
     font-weight: 700;
     font-family: var(--mono);
     letter-spacing: 0.05em;
     border: 1px solid;
+    white-space: nowrap;
   }
-  .sc-badge.blue  { background: var(--blue-bg);  color: var(--blue); border-color: rgba(0,180,216,0.3); }
-  .sc-badge.green { background: var(--green-bg); color: var(--green); border-color: var(--green-border); }
-  .sc-badge.gold  { background: var(--gold-bg);  color: var(--gold);  border-color: var(--gold-border); }
+  .sc-badge.blue  {
+    background: linear-gradient(135deg, rgba(0,140,200,0.15), rgba(0,100,160,0.08));
+    color: var(--blue);
+    border-color: rgba(0,180,216,0.35);
+    box-shadow: 0 0 10px rgba(0,180,216,0.1);
+  }
+  .sc-badge.green {
+    background: linear-gradient(135deg, rgba(0,200,100,0.13), rgba(0,160,80,0.06));
+    color: var(--green);
+    border-color: rgba(0,230,118,0.3);
+    box-shadow: 0 0 10px rgba(0,230,118,0.08);
+  }
+  .sc-badge.gold  {
+    background: linear-gradient(135deg, rgba(220,170,0,0.15), rgba(180,130,0,0.07));
+    color: var(--gold);
+    border-color: rgba(255,202,40,0.3);
+    box-shadow: 0 0 10px rgba(255,202,40,0.08);
+  }
+  /* Live clock badge */
+  .sc-badge.clock {
+    background: rgba(255,255,255,0.03);
+    color: var(--text2);
+    border-color: var(--border2);
+    font-size: 0.7rem;
+    cursor: default;
+  }
+  /* Timezone badge — shows active TZ in header */
+  .sc-tz-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 11px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-family: var(--mono);
+    letter-spacing: 0.05em;
+    background: rgba(255,202,40,0.07);
+    color: var(--gold);
+    border: 1px solid rgba(255,202,40,0.28);
+    white-space: nowrap;
+  }
+  /* Streamlit selectbox within TZ control row */
+  .sc-tz-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 0.2rem;
+    flex-wrap: wrap;
+  }
+  .sc-tz-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
 
   /* ── Rule pills ─────────────────────────────────────────────────── */
   .sc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 0.5rem 0 0.8rem; }
@@ -513,22 +676,127 @@ st.markdown("""
   .sc-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 6px;
+    gap: 8px;
     margin: 0.3rem 0 0.5rem;
   }
+
+  /* ── Two-column All layout ──────────────────────────────────────── */
+  .sc-all-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 0.3rem 0 0.5rem;
+  }
+  .sc-col-header {
+    font-size: 0.7rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.13em;
+    padding: 5px 10px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .sc-col-header.confirmed {
+    background: rgba(0,230,118,0.07);
+    color: var(--green);
+    border: 1px solid var(--green-border);
+  }
+  .sc-col-header.waiting {
+    background: rgba(255,180,0,0.07);
+    color: #ffaa00;
+    border: 1px dashed rgba(255,170,0,0.35);
+  }
+  .sc-col-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 7px;
+  }
+
+  /* ═══════ CONFIRMED cards — vibrant, glowing ══════════════════════ */
   .sc-card {
-    border-radius: 8px;
+    border-radius: 10px;
     border: 1px solid var(--border2);
     background: var(--surface);
-    padding: 0.5rem 0.65rem 0.45rem;
+    padding: 0.55rem 0.7rem 0.5rem;
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    border-left-width: 3px;
+    gap: 3px;
+    position: relative;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
-  .sc-card.buy  { border-left-color: var(--green); }
-  .sc-card.sell { border-left-color: var(--red); }
-  .sc-card.wait { opacity: 0.75; }
+  .sc-card:hover, .sc-card:active {
+    transform: translateY(-3px) scale(1.02);
+  }
+
+  /* BUY confirmed — vivid green glow */
+  .sc-card.buy {
+    border-left: 3px solid var(--green);
+    background: linear-gradient(135deg, rgba(0,230,118,0.06) 0%, rgba(15,15,21,1) 60%);
+    box-shadow: 0 0 0 0 rgba(0,230,118,0);
+  }
+  .sc-card.buy:hover, .sc-card.buy:active {
+    border-color: var(--green);
+    background: linear-gradient(135deg, rgba(0,230,118,0.13) 0%, rgba(15,15,21,1) 65%);
+    box-shadow: 0 6px 28px rgba(0,230,118,0.22), 0 2px 8px rgba(0,0,0,0.4);
+  }
+
+  /* SELL confirmed — vivid red glow */
+  .sc-card.sell {
+    border-left: 3px solid var(--red);
+    background: linear-gradient(135deg, rgba(255,64,96,0.06) 0%, rgba(15,15,21,1) 60%);
+    box-shadow: 0 0 0 0 rgba(255,64,96,0);
+  }
+  .sc-card.sell:hover, .sc-card.sell:active {
+    border-color: var(--red);
+    background: linear-gradient(135deg, rgba(255,64,96,0.13) 0%, rgba(15,15,21,1) 65%);
+    box-shadow: 0 6px 28px rgba(255,64,96,0.22), 0 2px 8px rgba(0,0,0,0.4);
+  }
+
+  /* ═══════ WAIT cards — amber dashed, clearly "pending" ════════════ */
+  .sc-card.wait {
+    border: 1px dashed rgba(255,170,0,0.3) !important;
+    border-left: none !important;
+    border-left-width: 0 !important;
+    background: rgba(20,18,10,0.9);
+    opacity: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  .sc-card.wait::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: repeating-linear-gradient(
+      to bottom,
+      #ffaa00 0px, #ffaa00 5px,
+      transparent 5px, transparent 9px
+    );
+    border-radius: 2px 0 0 2px;
+  }
+  .sc-card.wait:hover, .sc-card.wait:active {
+    border-color: rgba(255,170,0,0.55) !important;
+    background: rgba(30,25,8,0.95);
+    box-shadow: 0 6px 22px rgba(255,160,0,0.14), 0 2px 8px rgba(0,0,0,0.4);
+    transform: translateY(-2px) scale(1.015);
+  }
+  .sc-card.wait .sc-card-sym { color: #c8b070; }
+  .sc-card.wait .sc-card-price { color: #c89a30; }
+  .sc-card.wait .sc-card-info { color: #7a6840; }
+  .sc-card.wait .sc-card-info b { color: #9a8855; }
+
+  /* Hover effect on summary banner chips */
+  .ss-chip {
+    cursor: default;
+    transition: transform 0.12s, box-shadow 0.12s, filter 0.12s;
+  }
+  .ss-chip:hover { transform: translateY(-1px); filter: brightness(1.2); box-shadow: 0 3px 10px rgba(0,0,0,0.3); }
 
   .sc-card-row1 {
     display: flex;
@@ -538,7 +806,7 @@ st.markdown("""
   }
   .sc-card-sym {
     font-family: var(--mono);
-    font-size: 0.95rem;
+    font-size: 0.97rem;
     font-weight: 700;
     color: var(--text);
     letter-spacing: -0.01em;
@@ -546,18 +814,50 @@ st.markdown("""
   }
   .sc-card-dir {
     font-size: 0.65rem;
-    font-weight: 700;
-    padding: 1px 6px;
-    border-radius: 4px;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 5px;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     white-space: nowrap;
   }
-  .dir-buy  { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-  .dir-sell { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-border); }
-  .dir-buy-w  { background: rgba(0,230,118,0.04); color: #50c878; border: 1px solid rgba(80,200,120,0.18); }
-  .dir-sell-w { background: rgba(255,64,96,0.04); color: #e05060; border: 1px solid rgba(200,80,96,0.18); }
+  /* Confirmed direction badges — bright */
+  .dir-buy  {
+    background: linear-gradient(135deg, rgba(0,230,118,0.18), rgba(0,200,100,0.1));
+    color: var(--green-hi);
+    border: 1px solid rgba(0,230,118,0.4);
+    text-shadow: 0 0 8px rgba(0,230,118,0.5);
+  }
+  .dir-sell {
+    background: linear-gradient(135deg, rgba(255,64,96,0.18), rgba(220,40,70,0.1));
+    color: var(--red-hi);
+    border: 1px solid rgba(255,64,96,0.4);
+    text-shadow: 0 0 8px rgba(255,64,96,0.5);
+  }
+  /* Wait direction badges — muted amber */
+  .dir-buy-w  {
+    background: rgba(255,170,0,0.08);
+    color: #c8902a;
+    border: 1px dashed rgba(200,145,40,0.35);
+    letter-spacing: 0.04em;
+  }
+  .dir-sell-w {
+    background: rgba(255,120,0,0.08);
+    color: #c87030;
+    border: 1px dashed rgba(200,110,45,0.35);
+    letter-spacing: 0.04em;
+  }
 
+  /* Confirmed price — glowing gold */
+  .sc-card.buy  .sc-card-price,
+  .sc-card.sell .sc-card-price {
+    font-family: var(--mono);
+    font-size: 1.0rem;
+    font-weight: 700;
+    color: #ffd760;
+    text-shadow: 0 0 12px rgba(255,210,60,0.35);
+    line-height: 1.1;
+  }
   .sc-card-price {
     font-family: var(--mono);
     font-size: 0.95rem;
@@ -575,6 +875,39 @@ st.markdown("""
     text-overflow: ellipsis;
   }
   .sc-card-info b { color: var(--text2); font-weight: 600; }
+
+  /* Pulse dot for confirmed cards */
+  .sc-card-pulse {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-left: 4px;
+    vertical-align: middle;
+    animation: pulse-ring 1.8s ease-out infinite;
+  }
+  .sc-card.buy  .sc-card-pulse { background: var(--green); box-shadow: 0 0 4px var(--green); }
+  .sc-card.sell .sc-card-pulse { background: var(--red);   box-shadow: 0 0 4px var(--red); }
+  @keyframes pulse-ring {
+    0%   { transform: scale(1);   opacity: 1; }
+    60%  { transform: scale(1.5); opacity: 0.4; }
+    100% { transform: scale(1);   opacity: 1; }
+  }
+
+  /* ── Wait section label ─────────────────────────────────────────── */
+  .sc-wait-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #7a6840;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(255,170,0,0.06);
+    border: 1px dashed rgba(255,170,0,0.2);
+    margin: 0.6rem 0 0.4rem;
+    display: inline-block;
+  }
 
   /* ── Tab selector row (inner results tabs) ──────────────────────── */
   .sc-tab-row {
@@ -1367,11 +1700,11 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
 #  DEBUG SINGLE SYMBOL
 # ══════════════════════════════════════════════════════════════════════
 
-async def debug_single(sym_raw: str, cfg: dict) -> list:
+async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> list:
     """
     Debug a single symbol through all pipeline stages.
     v9j: delegates to shared stage workers — no duplicated logic.
-    v12: adds Stage 4 BOS/ChoCh validation.
+    v17: adds Stage 4 BOS/ChoCh validation.
     Returns list of (label, status, detail) tuples.
     """
     raw       = sym_raw.strip().upper().replace(" ", "")
@@ -1518,7 +1851,7 @@ async def debug_single(sym_raw: str, cfg: dict) -> list:
         sig_times = ""
         if sig_ts_list:
             last_ts = sig_ts_list[-1]
-            sig_times = datetime.datetime.utcfromtimestamp(last_ts / 1000).strftime("%Y-%m-%d %H:%M UTC")
+            sig_times = _fmt_ts(last_ts, tz_h, tz_label)
         logs.append(("S3 Pine Final Signal", "✅ PASS" if has_signal else "❌ FAIL",
             f"{sig_tf.upper()} Final {direction} Signal in window: {has_signal}  |  "
             f"{n_sigs} signal(s)  |  ⏰ Latest: {sig_times}"))
@@ -1573,10 +1906,12 @@ def _run_async(coro):
 
 
 def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
-               choch_status: str, now_ms: int, mode_key: str, timestamp: str) -> dict:
+               choch_status: str, now_ms: int, mode_key: str, timestamp: str,
+               tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> dict:
     """
-    v12: Parse a result row into structured fields.
+    v17: Parse a result row into structured fields.
     choch_status: "valid" or "wait"
+    tz_h: UTC offset in fractional hours for all timestamps
     """
     p      = _re.search(r"P=([\d.]+)",                    det)
     prev   = _re.search(r"prev_(?:peak|trough)=([\d.]+)", det)
@@ -1588,9 +1923,9 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
     age_h  = round((now_ms - pivot_ts) / 3_600_000, 1)
 
-    # Signal bar time
+    # Signal bar time — apply user timezone
     if sig_ts:
-        sig_dt = datetime.datetime.utcfromtimestamp(int(sig_ts.group(1)) / 1000).strftime("%Y-%m-%d %H:%M UTC")
+        sig_dt = _fmt_ts(int(sig_ts.group(1)), tz_h, tz_label)
     else:
         sig_dt = ""
 
@@ -1624,8 +1959,8 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     }
 
 
-def _parse_det_card(det: str) -> dict:
-    """Parse detail string into card display fields (no timestamp arg needed)."""
+def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> dict:
+    """Parse detail string into card display fields."""
     import re as _re2
     adx    = _re2.search(r"ADX_(?:cur|peak|end)=([\d.]+)", det)
     bb_m   = _re2.search(r"(\w+)_BB_pullback",             det)
@@ -1651,8 +1986,7 @@ def _parse_det_card(det: str) -> dict:
         if age_h < 1:   age_str = f"{age_h*60:.0f}m"
         elif age_h < 24: age_str = f"{age_h:.1f}h"
         else:            age_str = f"{age_h/24:.1f}d"
-        sig_time = datetime.datetime.utcfromtimestamp(
-            int(sig_ts.group(1)) / 1000).strftime("%Y-%m-%d %H:%M UTC")
+        sig_time = _fmt_ts(int(sig_ts.group(1)), tz_h, tz_label)
     else:
         age_h = 0.0; age_str = "—"; sig_time = "—"
 
@@ -1682,6 +2016,13 @@ def _parse_det_card(det: str) -> dict:
 
 def _init_session():
     """Ensure all session_state keys exist on first load."""
+    # Persist timezone across refreshes via query params
+    _qp_tz = st.query_params.get("tz", None)
+    if _qp_tz and _qp_tz in TIMEZONES:
+        _tz_default = _qp_tz
+    else:
+        _tz_default = TZ_DEFAULT
+
     defaults = {
         "scan_done":    False,
         "scan_state":   None,
@@ -1697,6 +2038,7 @@ def _init_session():
         "csv_fname":    "",
         "txt_fname":    "",
         "results_tab":  "all",
+        "tz_key":       _tz_default,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1761,7 +2103,9 @@ def _sc_summary_html(total: int, elapsed: float, bv: int, bw: int,
     )
 
 
-def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: str = "15m") -> str:
+def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: str = "15m",
+                       grid_cls: str = "sc-grid",
+                       tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> str:
     """Compact cards: symbol | price | TF | signal time | direction."""
     if not entries:
         label = ("BUY" if is_buy else "SELL") + (" confirmed" if is_valid else " waiting")
@@ -1773,15 +2117,17 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
     if is_buy and is_valid:
         dir_cls, dir_txt = "dir-buy",    "&#9650; BUY"
     elif is_buy:
-        dir_cls, dir_txt = "dir-buy-w",  "&#9650; BUY WAIT"
+        dir_cls, dir_txt = "dir-buy-w",  "&#9650; WAIT"
     elif is_valid:
         dir_cls, dir_txt = "dir-sell",   "&#9660; SELL"
     else:
-        dir_cls, dir_txt = "dir-sell-w", "&#9660; SELL WAIT"
+        dir_cls, dir_txt = "dir-sell-w", "&#9660; WAIT"
+
+    pulse = '<span class="sc-card-pulse"></span>' if is_valid else ''
 
     cards = []
     for sym, det in entries:
-        p     = _parse_det_card(det)
+        p     = _parse_det_card(det, tz_h, tz_label)
         # Extract bare base name: "BERA/USDT:USDT" → "BERA"
         base  = sym.split("/")[0].replace("USDT", "").replace("BUSD", "").replace("USD", "")
         if not base:  # fallback if already bare
@@ -1789,33 +2135,118 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
         cards.append(
             f'<div class="sc-card {card_cls}">'
             f'<div class="sc-card-row1">'
-            f'<span class="sc-card-sym">{base}</span>'
+            f'<span class="sc-card-sym">{base}{pulse}</span>'
             f'<span class="sc-card-dir {dir_cls}">{dir_txt}</span>'
             f'</div>'
             f'<div class="sc-card-price">{p["price"]}</div>'
             f'<div class="sc-card-info"><b>{tf_label}</b> &nbsp;{p["sig_time"]}</div>'
             f'</div>'
         )
-    return f'<div class="sc-grid">{"".join(cards)}</div>'
+    return f'<div class="{grid_cls}">{"".join(cards)}</div>'
+
+
+def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
+                              tz_h: float = 0.0, tz_label: str = TZ_DEFAULT) -> str:
+    """Render All tab as two columns: Confirmed left, Waiting right."""
+    # ── Confirmed column ──────────────────────────────────────────────
+    confirmed_parts = []
+    if bv_list:
+        confirmed_parts.append(_signal_cards_html(bv_list, True,  True,  mode_key, "sc-col-grid", tz_h, tz_label))
+    if sv_list:
+        confirmed_parts.append(_signal_cards_html(sv_list, False, True,  mode_key, "sc-col-grid", tz_h, tz_label))
+    conf_body = "".join(confirmed_parts) if confirmed_parts else (
+        '<div class="sc-empty" style="padding:1rem"><div class="ico" style="font-size:1.4rem">&#128269;</div>'
+        '<p style="font-size:0.8rem">No confirmed signals</p></div>')
+    conf_count = len(bv_list) + len(sv_list)
+    conf_col = (
+        f'<div>'
+        f'<div class="sc-col-header confirmed">&#9989; Confirmed &nbsp;<span style="opacity:0.7;font-weight:600">{conf_count}</span></div>'
+        f'{conf_body}'
+        f'</div>'
+    )
+
+    # ── Waiting column ────────────────────────────────────────────────
+    waiting_parts = []
+    if bw_list:
+        waiting_parts.append(_signal_cards_html(bw_list, True,  False, mode_key, "sc-col-grid", tz_h, tz_label))
+    if sw_list:
+        waiting_parts.append(_signal_cards_html(sw_list, False, False, mode_key, "sc-col-grid", tz_h, tz_label))
+    wait_body = "".join(waiting_parts) if waiting_parts else (
+        '<div class="sc-empty" style="padding:1rem"><div class="ico" style="font-size:1.4rem">&#9203;</div>'
+        '<p style="font-size:0.8rem">No waiting signals</p></div>')
+    wait_count = len(bw_list) + len(sw_list)
+    wait_col = (
+        f'<div>'
+        f'<div class="sc-col-header waiting">&#9203; Waiting &nbsp;<span style="opacity:0.7;font-weight:600">{wait_count}</span></div>'
+        f'{wait_body}'
+        f'</div>'
+    )
+
+    return f'<div class="sc-all-layout">{conf_col}{wait_col}</div>'
 
 
 def main():
     _init_session()
 
+    # ── Timezone — load from session / query params ──────────────────
+    tz_key   = st.session_state.get("tz_key", TZ_DEFAULT)
+    tz_h     = TIMEZONES.get(tz_key, 0.0)
+    sign_s   = "+" if tz_h >= 0 else "-"
+    ah_s     = int(abs(tz_h)); am_s = int(round((abs(tz_h)-ah_s)*60))
+    tz_short = f"UTC{sign_s}{ah_s:02d}:{am_s:02d}" if am_s else f"UTC{sign_s}{ah_s}"
+
     # ── Header ────────────────────────────────────────────────────────
-    st.markdown("""
+    hdr_col, tz_col = st.columns([5, 3])
+    with hdr_col:
+        st.markdown(f"""
 <div class="sc-header">
   <div class="sc-header-left">
-    <h1>&#9889; Binance Futures <span>Scanner</span></h1>
-    <div class="sub">Ultra-Fast &middot; Multi-Stage &middot; BOS/ChoCh Validated &middot; Pine Accurate</div>
+    <h1><i class="ico">&#9889;</i><span class="brand">Binance Futures</span> <span class="accent">Scanner</span></h1>
+    <div class="sub">
+      Ultra-Fast
+      <span class="dot">&bull;</span>
+      Multi-Stage Pipeline
+      <span class="dot">&bull;</span>
+      BOS/ChoCh Validated
+      <span class="dot">&bull;</span>
+      Pine Accurate
+    </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">v12</span>
-    <span class="sc-badge green">4 Stages</span>
-    <span class="sc-badge gold">BOS/ChoCh</span>
+    <span class="sc-badge blue">&#128640; v17</span>
+    <span class="sc-badge green">&#10004; 4 Stages</span>
+    <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
+    <span class="sc-tz-badge">&#127758; {tz_short}</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+    with tz_col:
+        st.markdown("""
+<div style="height:0.9rem"></div>
+<div class="sc-tz-label">&#127758;&nbsp; Display Timezone</div>
+""", unsafe_allow_html=True)
+        tz_sel_idx = TZ_LABELS.index(tz_key) if tz_key in TZ_LABELS else 0
+        new_tz = st.selectbox(
+            "tz_selector",
+            TZ_LABELS,
+            index=tz_sel_idx,
+            key="tz_selectbox",
+            label_visibility="collapsed",
+        )
+        if new_tz != tz_key:
+            st.session_state["tz_key"] = new_tz
+            st.query_params["tz"] = new_tz
+            tz_key   = new_tz
+            tz_h     = TIMEZONES.get(new_tz, 0.0)
+            sign_s   = "+" if tz_h >= 0 else "-"
+            ah_s     = int(abs(tz_h)); am_s = int(round((abs(tz_h)-ah_s)*60))
+            tz_short = f"UTC{sign_s}{ah_s:02d}:{am_s:02d}" if am_s else f"UTC{sign_s}{ah_s}"
+            st.rerun()
+        st.markdown(
+            f'<div style="font-size:0.68rem;color:#5a5a72;margin-top:2px;font-family:var(--mono)">'
+            f'Persists across page reloads</div>',
+            unsafe_allow_html=True)
 
     tab_scan, tab_debug = st.tabs(["&#128269;  Full Scan", "&#128027;  Debug Symbol"])
 
@@ -1943,9 +2374,9 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
                 prog_bar.progress(1.0, text=f"Done — {total} symbols in {elapsed:.1f}s")
                 ctr_ph.empty()
 
-                timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
                 now_ms    = int(time.time() * 1000)
                 ts_int    = int(time.time())
+                timestamp = _fmt_ts(now_ms, tz_h, tz_key)
 
                 all_results = (
                     [("BUY",  s, d, p, c) for s, d, p, c in buy_valid] +
@@ -1956,7 +2387,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
 
                 if all_results:
                     all_rows = [
-                        _parse_row(dir_, s, d, p, choch_st, now_ms, mode_key, timestamp)
+                        _parse_row(dir_, s, d, p, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key)
                         for dir_, s, d, p, choch_st in all_results
                     ]
                     df_final = pd.DataFrame(all_rows)
@@ -1967,6 +2398,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
                     txt_buf = io.StringIO()
                     txt_buf.write(f"BINANCE FUTURES SCANNER  —  {mode_key.upper()} MODE\n")
                     txt_buf.write(f"Scan Time : {timestamp}\n")
+                    txt_buf.write(f"Timezone  : {tz_key}\n")
                     txt_buf.write(f"Symbols   : {total}  |  Elapsed : {elapsed:.1f}s\n")
                     txt_buf.write(f"BUY  : {len(buy_valid)} VALID  {len(buy_wait)} WAIT\n")
                     txt_buf.write(f"SELL : {len(sell_valid)} VALID  {len(sell_wait)} WAIT\n")
@@ -1980,7 +2412,7 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
                         if not group: continue
                         txt_buf.write(f"\n{'─'*28} {group_label} {'─'*28}\n")
                         for sym, det, pts, choch_st in group:
-                            r = _parse_row(dir_, sym, det, pts, choch_st, now_ms, mode_key, timestamp)
+                            r = _parse_row(dir_, sym, det, pts, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key)
                             txt_buf.write(
                                 f"  {r['Symbol']:<24}  Price={r['Signal_Price']}\n"
                                 f"  {'':24}  ADX peak={r['ADX_Peak']}  end={r['ADX_End']}  Age={r['Pivot_Age_h']}h\n"
@@ -2026,6 +2458,8 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
             mode_key_r = st.session_state["scan_mode"]
             df_final   = st.session_state["df_final"]
             total      = state["total"]
+            r_tz_key   = st.session_state.get("tz_key", TZ_DEFAULT)
+            r_tz_h     = TIMEZONES.get(r_tz_key, 0.0)
 
             bv_list = st.session_state["buy_valid"]
             bw_list = st.session_state["buy_wait"]
@@ -2056,26 +2490,22 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
                 t_all, t_bv, t_bw, t_sv, t_sw = st.tabs(tab_labels)
 
                 with t_all:
-                    if bv_list:
-                        st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r),  unsafe_allow_html=True)
-                    if sv_list:
-                        st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r), unsafe_allow_html=True)
-                    if bw_list:
-                        st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r), unsafe_allow_html=True)
-                    if sw_list:
-                        st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r), unsafe_allow_html=True)
-                    if not any([bv_list, sv_list, bw_list, sw_list]):
+                    if any([bv_list, sv_list, bw_list, sw_list]):
+                        st.markdown(
+                            _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key_r, r_tz_h, r_tz_key),
+                            unsafe_allow_html=True)
+                    else:
                         st.markdown('<div class="sc-empty"><div class="ico">&#128269;</div><p>No signals.</p></div>',
                                     unsafe_allow_html=True)
 
                 with t_bv:
-                    st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r),  unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
                 with t_bw:
-                    st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
                 with t_sv:
-                    st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
                 with t_sw:
-                    st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r), unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key), unsafe_allow_html=True)
 
                 # Full table + export in collapsible
                 if df_final is not None and not df_final.empty:
@@ -2152,7 +2582,9 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
         if dbg_go:
             with st.spinner(f"Running pipeline on {sym_input.strip().upper()}…"):
                 try:
-                    logs = _run_async(debug_single(sym_input, dbg_cfg))
+                    _dbg_tz_key = st.session_state.get("tz_key", TZ_DEFAULT)
+                    _dbg_tz_h   = TIMEZONES.get(_dbg_tz_key, 0.0)
+                    logs = _run_async(debug_single(sym_input, dbg_cfg, _dbg_tz_h, _dbg_tz_key))
                 except Exception as e:
                     st.error(f"Error: {e}")
                     st.exception(e)
