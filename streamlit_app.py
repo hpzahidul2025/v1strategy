@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
 """
-Binance Futures Scanner · ULTRA-FAST Edition v9
+Binance Futures Scanner - ULTRA-FAST Edition v11
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
 v9 OPTIMIZATIONS & FIXES over v8:
@@ -110,7 +109,7 @@ MODES = {
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v9",
+    page_title="Binance Futures Scanner v11",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -118,20 +117,298 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+  /* ── Google Font ── */
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap');
+
+  /* ── Root tokens ── */
+  :root {
+    --bg:        #0d0d0f;
+    --surface:   #141418;
+    --border:    #222228;
+    --border2:   #2a2a35;
+    --green:     #00e676;
+    --green-dim: #004d25;
+    --red:       #ff3d57;
+    --red-dim:   #4d001a;
+    --gold:      #ffd740;
+    --text:      #e8e8f0;
+    --muted:     #6b6b80;
+    --font-mono: 'JetBrains Mono', monospace;
+    --font-body: 'Inter', sans-serif;
+  }
+
+  /* ── Page background ── */
+  .stApp, [data-testid="stAppViewContainer"] {
+    background: var(--bg) !important;
+    font-family: var(--font-body);
+    color: var(--text);
+  }
+  [data-testid="stHeader"] { background: transparent !important; }
+  section[data-testid="stSidebar"] { display: none; }
+
+  /* ── Remove top padding ── */
+  .main .block-container {
+    padding-top: 1.5rem !important;
+    padding-bottom: 3rem !important;
+    max-width: 1400px;
+  }
+
+  /* ── Tabs ── */
+  .stTabs [data-baseweb="tab-list"] {
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 4px;
+    gap: 4px;
+    border: 1px solid var(--border);
+  }
+  .stTabs [data-baseweb="tab"] {
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--muted);
+    padding: 0.5rem 1.2rem;
+    transition: all 0.2s;
+  }
+  .stTabs [aria-selected="true"] {
+    background: var(--border2) !important;
+    color: var(--text) !important;
+  }
+  .stTabs [data-baseweb="tab-panel"] {
+    padding-top: 1.2rem;
+  }
+
+  /* ── Buttons ── */
   .stButton > button {
-    width: 100%; height: 3.2rem;
-    font-size: 1.1rem; font-weight: 700; border-radius: 8px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border: 1px solid var(--border2);
+    color: var(--text);
+    border-radius: 8px;
+    font-family: var(--font-body);
+    font-weight: 600;
+    font-size: 0.95rem;
+    height: 2.8rem;
+    transition: all 0.2s;
+    width: 100%;
   }
-  .stRadio > div { gap: 0.5rem; }
-  .stRadio label { font-size: 1rem; }
-  .buy-badge  { background:#0f4; color:#000; padding:2px 8px; border-radius:4px; font-weight:700; }
-  .sell-badge { background:#f04; color:#fff; padding:2px 8px; border-radius:4px; font-weight:700; }
-  .metric-box {
-    border: 1px solid #333; border-radius:8px;
-    padding: 0.6rem 1rem; text-align: center; margin: 0.2rem;
+  .stButton > button:hover {
+    border-color: #4a4a6a;
+    background: linear-gradient(135deg, #1e1e3a 0%, #1a2540 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
   }
-  [data-testid="stDataFrame"] { overflow-x: auto; }
-  @media (max-width: 600px) { .main .block-container { padding: 0.5rem 0.6rem; } }
+  /* Primary button — scan */
+  .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #00b4d8 0%, #0077b6 100%);
+    border: none;
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 700;
+    height: 3rem;
+    letter-spacing: 0.03em;
+    box-shadow: 0 4px 20px rgba(0,180,216,0.3);
+  }
+  .stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #00c4e8 0%, #0088c6 100%);
+    box-shadow: 0 6px 24px rgba(0,180,216,0.45);
+    transform: translateY(-2px);
+  }
+
+  /* ── Download buttons ── */
+  [data-testid="stDownloadButton"] > button {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    color: var(--text);
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    height: 2.8rem;
+    width: 100%;
+    transition: all 0.2s;
+  }
+  [data-testid="stDownloadButton"] > button:hover {
+    border-color: var(--gold);
+    color: var(--gold);
+    background: rgba(255,215,64,0.06);
+  }
+
+  /* ── Radio ── */
+  .stRadio > label { font-weight: 600; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .stRadio [data-testid="stMarkdownContainer"] p { font-size: 0.92rem; }
+
+  /* ── Metrics ── */
+  [data-testid="stMetric"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.8rem 1rem;
+  }
+  [data-testid="stMetricLabel"] { font-size: 0.75rem !important; color: var(--muted) !important; text-transform: uppercase; letter-spacing: 0.08em; }
+  [data-testid="stMetricValue"] { font-family: var(--font-mono) !important; font-size: 1.3rem !important; color: var(--gold) !important; }
+
+  /* ── Info / success / error alerts ── */
+  [data-testid="stAlert"] {
+    border-radius: 10px;
+    border-left-width: 3px;
+  }
+
+  /* ── Progress bar ── */
+  [data-testid="stProgressBar"] > div > div {
+    background: linear-gradient(90deg, #00b4d8, #00e676) !important;
+    border-radius: 4px;
+  }
+
+  /* ── DataFrames ── */
+  [data-testid="stDataFrame"] {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  [data-testid="stDataFrame"] iframe {
+    border-radius: 10px;
+  }
+
+  /* ── Text input ── */
+  .stTextInput input {
+    background: var(--surface) !important;
+    border: 1px solid var(--border2) !important;
+    border-radius: 8px !important;
+    color: var(--text) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 0.95rem !important;
+  }
+  .stTextInput input:focus {
+    border-color: #00b4d8 !important;
+    box-shadow: 0 0 0 2px rgba(0,180,216,0.15) !important;
+  }
+
+  /* ── Expander ── */
+  .streamlit-expanderHeader {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+  }
+
+  /* ── Custom components ── */
+  .scan-header {
+    background: linear-gradient(135deg, #0a0a12 0%, #111120 100%);
+    border: 1px solid var(--border2);
+    border-radius: 14px;
+    padding: 1.8rem 2rem 1.4rem;
+    margin-bottom: 1.2rem;
+    text-align: center;
+  }
+  .scan-header h1 {
+    font-family: var(--font-mono);
+    font-size: 2rem;
+    font-weight: 700;
+    color: #fff;
+    margin: 0 0 0.3rem;
+    letter-spacing: -0.02em;
+  }
+  .scan-header .subtitle {
+    color: var(--muted);
+    font-size: 0.82rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .scan-header .badge {
+    display: inline-block;
+    background: rgba(0,180,216,0.12);
+    border: 1px solid rgba(0,180,216,0.3);
+    color: #00b4d8;
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+
+  .live-counter {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin: 0.6rem 0;
+  }
+  .live-card {
+    flex: 1;
+    min-width: 90px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.7rem 0.8rem 0.5rem;
+    text-align: center;
+  }
+  .live-card .lc-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .live-card .lc-val {
+    font-family: var(--font-mono);
+    font-size: 1.6rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .live-card.green { border-color: var(--green-dim); }
+  .live-card.green .lc-label { color: var(--green); }
+  .live-card.green .lc-val   { color: var(--green); }
+  .live-card.red   { border-color: var(--red-dim); }
+  .live-card.red   .lc-label { color: var(--red); }
+  .live-card.red   .lc-val   { color: var(--red); }
+
+  .result-banner {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-left: 3px solid var(--green);
+    border-radius: 0 10px 10px 0;
+    padding: 0.7rem 1.2rem;
+    margin: 0.8rem 0;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    font-size: 0.88rem;
+  }
+  .result-banner .rb-title { font-weight: 700; color: var(--green); }
+  .result-banner .rb-sep   { color: var(--border2); }
+  .result-banner .rb-green { color: var(--green); font-weight: 700; font-family: var(--font-mono); }
+  .result-banner .rb-red   { color: var(--red);   font-weight: 700; font-family: var(--font-mono); }
+  .result-banner .rb-dim   { color: var(--muted); }
+
+  .no-signals {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--muted);
+    font-size: 1rem;
+  }
+  .no-signals .icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+
+  .rule-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    margin: 3px;
+  }
+  .rule-pill .arrow { color: var(--gold); }
+
+  /* ── Mobile ── */
+  @media (max-width: 640px) {
+    .main .block-container { padding: 0.6rem 0.5rem !important; }
+    .scan-header h1 { font-size: 1.4rem; }
+    .live-card .lc-val { font-size: 1.2rem; }
+  }
 </style>
 """, unsafe_allow_html=True)
 
@@ -886,7 +1163,7 @@ def _run_async(coro):
 def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
                signal_ts: int, now_ms: int, mode_key: str, timestamp: str) -> dict:
     """
-    v10: Parse a result row into structured fields.
+    v11: Parse a result row into structured fields.
     signal_ts: candle open timestamp (ms) of the Pine Final Signal bar.
     """
     p      = _re.search(r"P=([\d.]+)",                   det)
@@ -896,7 +1173,7 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     bb_m   = _re.search(r"(\w+)_BB_pullback",             det)
     sig_m  = _re.search(r"\[(\w+) FinalSignal",           det)
     age_h  = round((now_ms - pivot_ts) / 3_600_000, 1)
-    # v10: Pine Final Signal bar time — convert ms epoch to human-readable UTC
+    # v11: Pine Final Signal bar time — convert ms epoch to human-readable UTC
     if signal_ts and signal_ts > 0:
         sig_dt = datetime.datetime.utcfromtimestamp(signal_ts / 1000).strftime("%Y-%m-%d %H:%M UTC")
     else:
@@ -925,12 +1202,12 @@ def _init_session():
     """Ensure all session_state keys exist on first load."""
     defaults = {
         "scan_done":    False,
-        "scan_state":   None,   # raw state dict from run_scan
+        "scan_state":   None,
         "scan_elapsed": 0.0,
         "scan_mode":    "15m",
-        "df_final":     None,   # pd.DataFrame of parsed results
-        "csv_bytes":    None,   # pre-encoded CSV (prevents download refresh)
-        "txt_bytes":    None,   # pre-encoded TXT
+        "df_final":     None,
+        "csv_bytes":    None,
+        "txt_bytes":    None,
         "csv_fname":    "",
         "txt_fname":    "",
     }
@@ -939,19 +1216,59 @@ def _init_session():
             st.session_state[k] = v
 
 
+def _live_counter_html(nb: int, ns: int, s2: int, s3: int, elapsed: float) -> str:
+    return f"""
+<div class="live-counter">
+  <div class="live-card green">
+    <div class="lc-label">BUY</div>
+    <div class="lc-val">{nb}</div>
+  </div>
+  <div class="live-card red">
+    <div class="lc-label">SELL</div>
+    <div class="lc-val">{ns}</div>
+  </div>
+  <div class="live-card">
+    <div class="lc-label">S2 Passed</div>
+    <div class="lc-val">{s2}</div>
+  </div>
+  <div class="live-card">
+    <div class="lc-label">S3 Passed</div>
+    <div class="lc-val">{s3}</div>
+  </div>
+  <div class="live-card">
+    <div class="lc-label">Elapsed</div>
+    <div class="lc-val">{elapsed:.0f}s</div>
+  </div>
+</div>"""
+
+
+def _result_banner_html(total, elapsed, buy_count, sell_count, mode_key) -> str:
+    return (
+        f"<div class='result-banner'>"
+        f"<span class='rb-title'>📊 Scan Results</span>"
+        f"<span class='rb-sep'>|</span>"
+        f"<span class='rb-dim'>{total} symbols &middot; {elapsed:.1f}s &middot; {total/max(elapsed,0.1):.1f} sym/s</span>"
+        f"<span class='rb-sep'>|</span>"
+        f"<span class='rb-green'>&#9650; {buy_count} BUY</span>"
+        f"<span class='rb-red'>&#9660; {sell_count} SELL</span>"
+        f"<span class='rb-sep'>|</span>"
+        f"<span class='rb-dim'>Mode: <b style='color:#ffd740'>{mode_key.upper()}</b></span>"
+        f"</div>"
+    )
+
+
 def main():
     _init_session()
 
+    # ── Header ────────────────────────────────────────────────────────
     st.markdown("""
-<h1 style='text-align:center;margin-bottom:0.2rem'>
-⚡ Binance Futures Scanner
-</h1>
-<p style='text-align:center;color:#888;margin-top:0;font-size:0.95rem'>
-Ultra-Fast Multi-Stage Engine · Institutional Logic · Pine Accurate · v10
-</p>
+<div class="scan-header">
+  <h1>&#9889; Binance Futures Scanner <span class="badge">v11</span></h1>
+  <div class="subtitle">Ultra-Fast &middot; Multi-Stage &middot; Institutional Logic &middot; Pine Accurate</div>
+</div>
 """, unsafe_allow_html=True)
 
-    tab_scan, tab_debug = st.tabs(["🔍 Full Scan", "🐛 Debug Pair"])
+    tab_scan, tab_debug = st.tabs(["🔍 Full Scan", "🐛 Debug Symbol"])
 
     # ══ TAB 1: FULL SCAN ══════════════════════════════════════════════
     with tab_scan:
@@ -960,113 +1277,100 @@ Ultra-Fast Multi-Stage Engine · Institutional Logic · Pine Accurate · v10
         _proxy = _get_proxy()
         if _proxy:
             _host = _proxy.split("@")[-1] if "@" in _proxy else _proxy.split("//")[-1]
-            st.success(f"✅ Proxy active — routing via **{_host}**  (Binance geo-block bypassed)", icon="🔒")
+            st.success(f"🔒 Proxy active — **{_host}** · Binance geo-block bypassed")
         else:
-            st.error(
-                "⚠️ **No proxy configured.** Binance blocks Streamlit Cloud IPs.  "
-                "Add your proxy URL in **Streamlit Secrets** → key: `PROXY_URL`",
-                icon="🚫"
-            )
-            with st.expander("📋 How to add your free proxy (Webshare.io) — takes 3 minutes"):
+            st.error("🚫 No proxy configured — Binance blocks Streamlit Cloud IPs. Add `PROXY_URL` to Streamlit Secrets.")
+            with st.expander("📋 How to set up a free proxy (3 min)"):
                 st.markdown("""
-**Step 1 — Get a free proxy**
-1. Go to **https://proxy2.webshare.io/register** → create free account (no credit card)
-2. After login → go to **Proxy** → **List** tab → Download in **Username:Password@IP:Port** format
-3. Pick any proxy, e.g.: `http://username:password@12.34.56.78:8080`
-
-**Step 2 — Add to Streamlit Secrets**
-1. **https://share.streamlit.io** → your app → **⋮** → **Settings** → **Secrets**
-2. Paste:
+1. Register at **https://proxy2.webshare.io** (free, no credit card)
+2. Go to **Proxy → List** → Download as `Username:Password@IP:Port`
+3. In Streamlit → your app → **⋮ → Settings → Secrets**, add:
 ```
-PROXY_URL = "http://youruser:yourpass@12.34.56.78:8080"
+PROXY_URL = "http://user:pass@1.2.3.4:8080"
 ```
-3. Click **Save** — app restarts in ~30 seconds
+4. Save — app restarts in ~30s ✅
 """)
 
-        # ── Mode selector ─────────────────────────────────────────────
-        mode_choice = st.radio(
-            "Signal Timeframe",
-            options=["15M  (Daily → 4H → 1H → 15M)", "5M  (4H → 1H → 15M → 5M)"],
-            index=0, horizontal=True,
+        st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+
+        # ── Mode + metrics row ────────────────────────────────────────
+        left_col, right_col = st.columns([2, 3])
+        with left_col:
+            mode_choice = st.radio(
+                "**Scan Mode**",
+                options=["15M  (Daily → 4H → 1H → 15M)", "5M  (4H → 1H → 15M → 5M)"],
+                index=0,
+            )
+            mode_key = "15m" if mode_choice.startswith("15M") else "5m"
+            cfg = MODES[mode_key]
+        with right_col:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Pivot TF",  cfg["pivot_tf"].upper())
+            c2.metric("TDI/ADX",   cfg["tdi_tf"].upper())
+            c3.metric("BB TF",     cfg["mid_tf"].upper())
+            c4.metric("Signal TF", cfg["sig_tf"].upper())
+
+        # Rule pills
+        st.markdown(
+            f"<div style='margin:0.4rem 0 0.8rem'>"
+            f"<span class='rule-pill'>S1 <span class='arrow'>&#8594;</span> {cfg['pivot_tf'].upper()} Pivot + ADX&gt;{ADX_TH:.0f}</span>"
+            f"<span class='rule-pill'>S2 <span class='arrow'>&#8594;</span> TDI + KC Band</span>"
+            f"<span class='rule-pill'>S3 <span class='arrow'>&#8594;</span> {cfg['mid_tf'].upper()} BB Pullback + {cfg['sig_tf'].upper()} Pine Signal</span>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
-        mode_key = "15m" if mode_choice.startswith("15M") else "5m"
-        cfg      = MODES[mode_key]
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Pivot TF",  cfg["pivot_tf"].upper())
-        col2.metric("TDI TF",    cfg["tdi_tf"].upper())
-        col3.metric("Mid TF",    cfg["mid_tf"].upper())
-        col4.metric("Signal TF", cfg["sig_tf"].upper())
-
-        st.info(
-            f"**Rules:**  "
-            f"S1 — {cfg['pivot_tf'].upper()} pivot + {cfg['tdi_tf'].upper()} ADX > {ADX_TH:.0f}  |  "
-            f"S2 — TDI + KC band  |  "
-            f"S3 — {cfg['mid_tf'].upper()} BB pullback + {cfg['sig_tf'].upper()} Pine Final Signal",
-            icon="ℹ️"
-        )
-
-        # Market cache refresh
-        c_btn1, c_btn2 = st.columns([1, 4])
-        with c_btn1:
-            if st.button("🔄 Refresh Markets", help="Clear cached market list"):
-                if "markets" in st.session_state:
-                    del st.session_state["markets"]
+        # ── Action buttons ────────────────────────────────────────────
+        btn_c1, btn_c2, _sp = st.columns([2, 1, 3])
+        with btn_c1:
+            scan_clicked = st.button("🚀  Start Scan", type="primary", key="scan_btn")
+        with btn_c2:
+            if st.button("🔄 Markets", help="Clear cached market list and reload from Binance"):
+                st.session_state.pop("markets", None)
                 st.rerun()
 
-        st.markdown("---")
+        st.markdown("<hr style='border-color:#1e1e28;margin:0.6rem 0 0.8rem'>", unsafe_allow_html=True)
 
-        # ── SCAN BUTTON ───────────────────────────────────────────────
-        if st.button("🚀 Start Scan", type="primary", key="scan_btn"):
-            # Clear previous results
-            st.session_state["scan_done"]  = False
-            st.session_state["df_final"]   = None
-            st.session_state["csv_bytes"]  = None
-            st.session_state["txt_bytes"]  = None
-
+        # ── SCAN EXECUTION ────────────────────────────────────────────
+        if scan_clicked:
+            st.session_state.update({
+                "scan_done": False, "df_final": None,
+                "csv_bytes": None,  "txt_bytes": None,
+            })
             t0 = time.time()
 
-            prog_bar    = st.progress(0, text="Connecting to Binance…")
-            status_box  = st.empty()
-            live_tbl    = st.empty()
+            prog_bar = st.progress(0.0, text="Connecting to Binance…")
+            ctr_ph   = st.empty()
+            live_ph  = st.empty()
 
             def update_ui(state: dict):
                 total   = state["total"]
-                s1_done = state["s1_done"]
-                pct     = s1_done / total if total else 0
+                done    = state["s1_done"]
+                pct     = done / total if total else 0
                 elapsed = time.time() - t0
-                spd     = s1_done / max(elapsed, 0.01)
-                prog_bar.progress(min(pct, 1.0),
-                    text=f"Scanning… {s1_done}/{total}  |  {spd:.0f} sym/s  |  "
-                         f"→S2: {state['s2_in']}  →S3: {state['s3_in']}")
-                nb = len(state["buy"])
-                ns = len(state["sell"])
-                status_box.markdown(
-                    f"<div style='display:flex;gap:0.8rem;flex-wrap:wrap;margin:0.4rem 0'>"
-                    f"<div class='metric-box'><b style='color:#00ee44'>🟢 BUY</b><br>"
-                    f"<span style='font-size:1.8rem;font-weight:800;color:#00ee44'>{nb}</span></div>"
-                    f"<div class='metric-box'><b style='color:#ff4444'>🔴 SELL</b><br>"
-                    f"<span style='font-size:1.8rem;font-weight:800;color:#ff4444'>{ns}</span></div>"
-                    f"<div class='metric-box'><b>→S2</b><br><span style='font-size:1.4rem'>{state['s2_in']}</span></div>"
-                    f"<div class='metric-box'><b>→S3</b><br><span style='font-size:1.4rem'>{state['s3_in']}</span></div>"
-                    f"<div class='metric-box'><b>⏱ Elapsed</b><br><span style='font-size:1.4rem'>{elapsed:.0f}s</span></div>"
-                    f"</div>",
-                    unsafe_allow_html=True
+                spd     = done / max(elapsed, 0.01)
+                prog_bar.progress(
+                    min(pct, 1.0),
+                    text=f"Scanning {done}/{total} · {spd:.0f} sym/s · S2:{state['s2_in']} S3:{state['s3_in']}"
                 )
-                # Live table — show latest signals as they arrive
+                ctr_ph.markdown(
+                    _live_counter_html(
+                        len(state["buy"]), len(state["sell"]),
+                        state["s2_in"], state["s3_in"], elapsed
+                    ),
+                    unsafe_allow_html=True,
+                )
                 rows = (
-                    [{"🟢/🔴": "🟢 BUY", "Symbol": sym, "Detail": det}
-                     for sym, det, _, _st in state["buy"]] +
-                    [{"🟢/🔴": "🔴 SELL", "Symbol": sym, "Detail": det}
-                     for sym, det, _, _st in state["sell"]]
+                    [{"Dir": "🟢 BUY",  "Symbol": s, "Detail": d} for s, d, _, _t in state["buy"]] +
+                    [{"Dir": "🔴 SELL", "Symbol": s, "Detail": d} for s, d, _, _t in state["sell"]]
                 )
                 if rows:
-                    live_tbl.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    live_ph.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
             try:
                 state = _run_async(run_scan(cfg, update_ui))
             except Exception as e:
-                st.error(f"Scan error: {e}")
+                st.error(f"Scan failed: {e}")
                 st.exception(e)
                 state = None
 
@@ -1075,36 +1379,34 @@ PROXY_URL = "http://youruser:yourpass@12.34.56.78:8080"
                 total        = state["total"]
                 buy_results  = sorted(state["buy"],  key=lambda x: x[0])
                 sell_results = sorted(state["sell"], key=lambda x: x[0])
-                all_sigs     = len(buy_results) + len(sell_results)
 
-                prog_bar.progress(1.0, text=f"✅ Done in {elapsed:.1f}s  ({total/elapsed:.1f} sym/s)")
-
-                st.success(
-                    f"**Scan complete** — {total} symbols in {elapsed:.1f}s  "
-                    f"({total/elapsed:.1f} sym/s) · "
-                    f"Funnel: {total} → {state['s2_in']} → {state['s3_in']} → **{all_sigs} signals**"
+                prog_bar.progress(1.0, text=f"✅ Done — {total} symbols in {elapsed:.1f}s")
+                ctr_ph.markdown(
+                    _live_counter_html(
+                        len(buy_results), len(sell_results),
+                        state["s2_in"], state["s3_in"], elapsed
+                    ),
+                    unsafe_allow_html=True,
                 )
+                live_ph.empty()
 
-                # ── Build structured df_final ──────────────────────────
                 timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
                 now_ms    = int(time.time() * 1000)
                 ts_int    = int(time.time())
 
                 if buy_results or sell_results:
                     all_rows = (
-                        [_parse_row("BUY",  sym, det, pts, sig_ts, now_ms, mode_key, timestamp)
-                         for sym, det, pts, sig_ts in buy_results] +
-                        [_parse_row("SELL", sym, det, pts, sig_ts, now_ms, mode_key, timestamp)
-                         for sym, det, pts, sig_ts in sell_results]
+                        [_parse_row("BUY",  s, d, p, st_, now_ms, mode_key, timestamp)
+                         for s, d, p, st_ in buy_results] +
+                        [_parse_row("SELL", s, d, p, st_, now_ms, mode_key, timestamp)
+                         for s, d, p, st_ in sell_results]
                     )
                     df_final = pd.DataFrame(all_rows)
 
-                    # ── Pre-encode CSV for download (no rerun on click) ────
                     csv_buf = io.StringIO()
                     df_final.to_csv(csv_buf, index=False)
                     csv_bytes = csv_buf.getvalue().encode("utf-8")
 
-                    # ── Pre-encode TXT ────────────────────────────────────
                     txt_buf = io.StringIO()
                     txt_buf.write(f"BINANCE FUTURES SCANNER  —  {mode_key.upper()} MODE\n")
                     txt_buf.write(f"Scan Time    : {timestamp}\n")
@@ -1119,125 +1421,156 @@ PROXY_URL = "http://youruser:yourpass@12.34.56.78:8080"
                             r = _parse_row(direction, sym, det, pts, sig_ts, now_ms, mode_key, timestamp)
                             txt_buf.write(
                                 f"  {r['Symbol']:<24}  Pivot={r['Pivot_P']}   Prev={r['Prev_Pivot']}\n"
-                                f"  {'':24}  ADX  peak={r['ADX_Peak']}  end={r['ADX_End']}  "
-                                f"Age={r['Pivot_Age_h']}h\n"
+                                f"  {'':24}  ADX  peak={r['ADX_Peak']}  end={r['ADX_End']}  Age={r['Pivot_Age_h']}h\n"
                                 f"  {'':24}  BB={r['BB_TF']}  Signal={r['Signal_TF']}\n"
-                                f"  {'':24}  ⏰ Pine Final Signal Time: {r['Signal_Time']}\n"
+                                f"  {'':24}  Pine Final Signal Time: {r['Signal_Time']}\n\n"
                             )
                     txt_bytes = txt_buf.getvalue().encode("utf-8")
 
-                    # ── Store in session_state so results survive reruns ───
-                    st.session_state["scan_done"]    = True
-                    st.session_state["scan_state"]   = state
-                    st.session_state["scan_elapsed"] = elapsed
-                    st.session_state["scan_mode"]    = mode_key
-                    st.session_state["df_final"]     = df_final
-                    st.session_state["csv_bytes"]    = csv_bytes
-                    st.session_state["txt_bytes"]    = txt_bytes
-                    st.session_state["csv_fname"]    = f"signals_{mode_key}_{ts_int}.csv"
-                    st.session_state["txt_fname"]    = f"signals_{mode_key}_{ts_int}.txt"
+                    st.session_state.update({
+                        "scan_done":    True,
+                        "scan_state":   state,
+                        "scan_elapsed": elapsed,
+                        "scan_mode":    mode_key,
+                        "df_final":     df_final,
+                        "csv_bytes":    csv_bytes,
+                        "txt_bytes":    txt_bytes,
+                        "csv_fname":    f"signals_{mode_key}_{ts_int}.csv",
+                        "txt_fname":    f"signals_{mode_key}_{ts_int}.txt",
+                    })
                 else:
-                    st.session_state["scan_done"] = True
-                    st.session_state["scan_state"] = state
-                    st.session_state["scan_elapsed"] = elapsed
-                    st.session_state["df_final"] = None
+                    st.session_state.update({
+                        "scan_done":    True,
+                        "scan_state":   state,
+                        "scan_elapsed": elapsed,
+                        "df_final":     None,
+                    })
 
         # ══════════════════════════════════════════════════════════════
-        # RESULTS — rendered OUTSIDE the button block so they persist
-        # across Streamlit reruns (tab clicks, download clicks, etc.)
-        # This is the fix for the DeltaGenerator dump and sticky results.
+        #  RESULTS — outside button block; persist across all reruns
         # ══════════════════════════════════════════════════════════════
         if st.session_state["scan_done"] and st.session_state["scan_state"] is not None:
             state      = st.session_state["scan_state"]
             elapsed    = st.session_state["scan_elapsed"]
-            mode_key   = st.session_state["scan_mode"]
+            mode_key_r = st.session_state["scan_mode"]
             df_final   = st.session_state["df_final"]
             total      = state["total"]
             buy_count  = len(state["buy"])
             sell_count = len(state["sell"])
             all_sigs   = buy_count + sell_count
 
-            st.markdown("---")
             st.markdown(
-                f"<div style='background:#1a2a1a;border:1px solid #2a4a2a;border-radius:8px;"
-                f"padding:0.8rem 1.2rem;margin-bottom:1rem'>"
-                f"<span style='color:#00ee44;font-weight:700'>📊 Last Scan Results</span>"
-                f"  ·  {total} symbols  ·  {elapsed:.1f}s  "
-                f"·  <span style='color:#00ee44'>{buy_count} BUY</span>"
-                f"  <span style='color:#ff4444'>{sell_count} SELL</span>"
-                f"  ·  Mode: <b>{mode_key.upper()}</b>"
-                f"</div>",
-                unsafe_allow_html=True
+                _result_banner_html(total, elapsed, buy_count, sell_count, mode_key_r),
+                unsafe_allow_html=True,
             )
 
             if df_final is not None and not df_final.empty:
-                display_cols = ["Direction", "Symbol", "Pivot_P", "Prev_Pivot",
-                                "ADX_Peak", "ADX_End", "BB_TF", "Signal_TF",
-                                "Signal_Time", "Pivot_Age_h"]
+                display_cols = [
+                    "Direction", "Symbol", "Pivot_P", "Prev_Pivot",
+                    "ADX_Peak", "ADX_End", "BB_TF", "Signal_TF",
+                    "Signal_Time", "Pivot_Age_h",
+                ]
+                col_cfg = {
+                    "Direction":   st.column_config.TextColumn("Dir",        width=65),
+                    "Symbol":      st.column_config.TextColumn("Symbol",     width=155),
+                    "Pivot_P":     st.column_config.NumberColumn("Pivot P",  format="%.5f", width=105),
+                    "Prev_Pivot":  st.column_config.NumberColumn("Prev Pivot", format="%.5f", width=105),
+                    "ADX_Peak":    st.column_config.NumberColumn("ADX Peak", format="%.1f", width=88),
+                    "ADX_End":     st.column_config.NumberColumn("ADX End",  format="%.1f", width=82),
+                    "BB_TF":       st.column_config.TextColumn("BB TF",     width=62),
+                    "Signal_TF":   st.column_config.TextColumn("Sig TF",    width=68),
+                    "Signal_Time": st.column_config.TextColumn("⏰ Pine Signal Time", width=170),
+                    "Pivot_Age_h": st.column_config.NumberColumn("Age h",   format="%.1f", width=68),
+                }
+                _h = lambda n: min(520, 44 + 36 * n)
 
                 t_all, t_buy, t_sell = st.tabs([
-                    f"📋 All ({all_sigs})",
-                    f"🟢 BUY ({buy_count})",
-                    f"🔴 SELL ({sell_count})",
+                    f"📋 All  ({all_sigs})",
+                    f"🟢 BUY  ({buy_count})",
+                    f"🔴 SELL  ({sell_count})",
                 ])
                 with t_all:
-                    st.dataframe(df_final[display_cols],
-                                 use_container_width=True, hide_index=True,
-                                 height=min(400, 45 + 35 * len(df_final)))
+                    st.dataframe(df_final[display_cols], use_container_width=True,
+                                 hide_index=True, height=_h(len(df_final)), column_config=col_cfg)
                 with t_buy:
                     df_b = df_final[df_final["Direction"] == "BUY"][display_cols]
                     if not df_b.empty:
                         st.dataframe(df_b, use_container_width=True, hide_index=True,
-                                     height=min(400, 45 + 35 * len(df_b)))
+                                     height=_h(len(df_b)), column_config=col_cfg)
                     else:
-                        st.info("No BUY signals in this scan.")
+                        st.markdown('<div class="no-signals"><div class="icon">🔎</div>No BUY signals this scan.</div>', unsafe_allow_html=True)
                 with t_sell:
                     df_s = df_final[df_final["Direction"] == "SELL"][display_cols]
                     if not df_s.empty:
                         st.dataframe(df_s, use_container_width=True, hide_index=True,
-                                     height=min(400, 45 + 35 * len(df_s)))
+                                     height=_h(len(df_s)), column_config=col_cfg)
                     else:
-                        st.info("No SELL signals in this scan.")
+                        st.markdown('<div class="no-signals"><div class="icon">🔎</div>No SELL signals this scan.</div>', unsafe_allow_html=True)
 
-                # ── Export — pre-encoded bytes, NO page refresh ──────────
-                st.markdown("### ⬇️ Export Signals")
-                colA, colB = st.columns(2)
-                colA.download_button(
-                    label="📄 Download CSV",
+                # ── Export buttons ────────────────────────────────────
+                st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+                ec1, ec2, _esp = st.columns([1, 1, 2])
+                ec1.download_button(
+                    "📄 Export CSV",
                     data=st.session_state["csv_bytes"],
                     file_name=st.session_state["csv_fname"],
                     mime="text/csv",
                     use_container_width=True,
                 )
-                colB.download_button(
-                    label="📝 Download TXT Report",
+                ec2.download_button(
+                    "📝 Export TXT",
                     data=st.session_state["txt_bytes"],
                     file_name=st.session_state["txt_fname"],
                     mime="text/plain",
                     use_container_width=True,
                 )
             else:
-                st.warning("No signals found in last scan.")
+                st.markdown(
+                    '<div class="no-signals"><div class="icon">🔭</div>'
+                    'No signals found — market conditions did not meet all 3 stage filters.</div>',
+                    unsafe_allow_html=True,
+                )
 
-    # ══ TAB 2: DEBUG PAIR ═════════════════════════════════════════════
+    # ══ TAB 2: DEBUG SYMBOL ═══════════════════════════════════════════
     with tab_debug:
-        st.subheader("Debug a Single Symbol")
-        st.caption("Verbose pass/fail for every stage — see exactly why a pair passes or fails")
+        st.markdown("#### Debug a Single Symbol")
+        st.caption("Runs every pipeline stage verbosely — see exactly where and why a pair passes or fails.")
 
-        dbg_mode = st.radio(
-            "Ruleset",
-            ["15M  (Daily → 4H → 1H → 15M)", "5M  (4H → 1H → 15M → 5M)"],
-            index=0, horizontal=True, key="dbg_mode"
-        )
-        dbg_cfg = MODES["15m" if dbg_mode.startswith("15M") else "5m"]
+        d_col1, d_col2 = st.columns([2, 3])
+        with d_col1:
+            dbg_mode = st.radio(
+                "**Ruleset**",
+                ["15M  (Daily → 4H → 1H → 15M)", "5M  (4H → 1H → 15M → 5M)"],
+                index=0, key="dbg_mode"
+            )
+            dbg_cfg = MODES["15m" if dbg_mode.startswith("15M") else "5m"]
+            sym_input = st.text_input(
+                "Symbol",
+                placeholder="BTC  or  BTCUSDT  or  BTC/USDT:USDT",
+                value="BTC", key="sym_input"
+            )
+            dbg_go = st.button("🔎 Run Debug", type="primary", key="debug_btn")
 
-        sym_input = st.text_input(
-            "Symbol  (e.g. BTC  or  BTCUSDT  or  BTC/USDT:USDT)",
-            value="BTC", key="sym_input"
-        )
+        with d_col2:
+            st.markdown(
+                "<div style='padding:0.9rem 1rem;background:var(--surface);"
+                "border:1px solid var(--border);border-radius:10px;"
+                "font-size:0.82rem;color:var(--muted);line-height:2'>"
+                "<b style='color:var(--text)'>Pipeline stages checked:</b><br>"
+                "S1 &nbsp;·&nbsp; HLC3 pivot chain pattern<br>"
+                "S1 &nbsp;·&nbsp; ADX momentum in pivot window<br>"
+                "S1 &nbsp;·&nbsp; Pivot age gate (8h / 48h)<br>"
+                "S2 &nbsp;·&nbsp; TDI RSI fast/slow direction<br>"
+                "S2 &nbsp;·&nbsp; Keltner Channel band position<br>"
+                "S2 &nbsp;·&nbsp; Last-15-bar band cleanness<br>"
+                "S3 &nbsp;·&nbsp; BB continuation pullback<br>"
+                "S3 &nbsp;·&nbsp; Pine Final Signal + exact timestamp"
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
-        if st.button("🔎 Debug Symbol", type="primary", key="debug_btn"):
-            with st.spinner(f"Checking {sym_input.strip().upper()}…"):
+        if dbg_go:
+            with st.spinner(f"Running pipeline on **{sym_input.strip().upper()}**…"):
                 try:
                     logs = _run_async(debug_single(sym_input, dbg_cfg))
                 except Exception as e:
@@ -1246,26 +1579,27 @@ PROXY_URL = "http://youruser:yourpass@12.34.56.78:8080"
                     logs = []
 
             if logs:
-                rows = [{"Stage": lbl, "Status": status, "Detail": detail}
-                        for lbl, status, detail in logs]
+                rows = [{"Stage": lbl, "Status": stat, "Detail": detail}
+                        for lbl, stat, detail in logs]
                 df_dbg = pd.DataFrame(rows)
 
-                def color_status(val):
-                    if "PASS" in val: return "color: #00ff66; font-weight: bold"
-                    if "FAIL" in val: return "color: #ff4444; font-weight: bold"
+                def _color(val):
+                    if "PASS" in val: return "color:#00e676;font-weight:700"
+                    if "FAIL" in val: return "color:#ff3d57;font-weight:700"
                     return ""
 
                 st.dataframe(
-                    df_dbg.style.map(color_status, subset=["Status"]),
+                    df_dbg.style.map(_color, subset=["Status"]),
                     use_container_width=True, hide_index=True,
+                    height=44 + 36 * len(rows),
                 )
 
-                last_status = logs[-1][1]
-                if "PASS" in last_status:
-                    st.success("✅ All stages passed — SIGNAL CONFIRMED!")
+                last = logs[-1]
+                if "PASS" in last[1]:
+                    st.success("✅ All stages passed — **SIGNAL CONFIRMED**")
                 else:
-                    st.error(f"❌ Pipeline stopped at: **{logs[-1][0]}**")
-                    st.info(f"Detail: {logs[-1][2]}")
+                    st.error(f"❌ Failed at **{last[0]}**")
+                    st.caption(f"Detail: {last[2]}")
 
 
 if __name__ == "__main__":
