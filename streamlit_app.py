@@ -1,6 +1,16 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v24
+Binance Futures Scanner - ULTRA-FAST Edition v25
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v25 UPDATES over v24:
+  FEAT: Multi-proxy fallback — up to 4 proxy slots (PROXY_URL … PROXY_URL_4) in
+        Streamlit Secrets. Slots tried in order on each scan/debug run; first
+        successful connection is used and remembered in session_state.
+        If the active slot fails mid-session, next scan auto-retries all slots.
+  FEAT: Proxy status banner shows all configured slots with ACTIVE / STANDBY chips
+        and a green indicator on the currently connected slot.
+  FEAT: debug_single logs proxy connection slot as first step for transparency.
+  CHORE: Version bump to v25; file renamed binance_futures_scanner_v25.py.
 
 v24 UPDATES over v23:
   UI:   Settings panel (TZ + time format) hidden behind gear icon (⚙️) — click to reveal.
@@ -295,7 +305,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v24",
+    page_title="Binance Futures Scanner v25",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1349,20 +1359,41 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PROXY / EXCHANGE HELPERS
+#  PROXY / EXCHANGE HELPERS  — multi-proxy fallback
 # ══════════════════════════════════════════════════════════════════════
 
+# Secret keys checked in priority order (add more as needed)
+PROXY_KEYS = ["PROXY_URL", "PROXY_URL_2", "PROXY_URL_3", "PROXY_URL_4"]
+
+
+def _get_all_proxies() -> list[str]:
+    """Return all configured proxy URLs in priority order, skipping empty slots."""
+    proxies = []
+    for key in PROXY_KEYS:
+        try:
+            val = st.secrets.get(key, "") or ""
+        except Exception:
+            val = os.environ.get(key, "") or ""
+        if val.strip():
+            proxies.append(val.strip())
+    return proxies
+
+
 def _get_proxy() -> str:
-    """Read PROXY_URL from Streamlit secrets or environment variable."""
-    try:
-        return st.secrets["PROXY_URL"]
-    except Exception:
-        return os.environ.get("PROXY_URL", "")
+    """Return the first available proxy URL (backwards-compatible helper)."""
+    proxies = _get_all_proxies()
+    return proxies[0] if proxies else ""
 
 
-def _make_exchange() -> ccxt_async.binanceusdm:
-    """Return a configured binanceusdm exchange, with proxy if available."""
-    proxy = _get_proxy()
+def _proxy_label(proxy: str) -> str:
+    """Return a safe display label (host:port only, no credentials)."""
+    if not proxy:
+        return "none"
+    return proxy.split("@")[-1] if "@" in proxy else proxy.split("//")[-1]
+
+
+def _make_exchange_with_proxy(proxy: str = "") -> ccxt_async.binanceusdm:
+    """Return a configured binanceusdm exchange using the given proxy URL."""
     cfg: dict = {
         "enableRateLimit": True,
         "options": {"defaultType": "future"},
@@ -1370,6 +1401,31 @@ def _make_exchange() -> ccxt_async.binanceusdm:
     if proxy:
         cfg["aiohttp_proxy"] = proxy
     return ccxt_async.binanceusdm(cfg)
+
+
+def _make_exchange() -> ccxt_async.binanceusdm:
+    """Return exchange with first available proxy (backwards-compatible)."""
+    return _make_exchange_with_proxy(_get_proxy())
+
+
+async def _try_load_markets(proxies: list[str]) -> tuple:
+    """
+    Attempt load_markets() across proxy list until one succeeds.
+    Returns (exchange, active_proxy_url, active_proxy_index).
+    Raises RuntimeError if all proxies fail.
+    """
+    errors = []
+    for i, proxy in enumerate(proxies if proxies else [""]):
+        ex = _make_exchange_with_proxy(proxy)
+        try:
+            await ex.load_markets()
+            return ex, proxy, i
+        except Exception as e:
+            await ex.close()
+            errors.append(f"Proxy {i+1} ({_proxy_label(proxy)}): {e}")
+    raise RuntimeError(
+        "All proxies failed to connect:\n" + "\n".join(errors)
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2047,16 +2103,25 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
     """
     Run full 4-stage pipeline over all USDT perpetuals.
     Calls progress_callback(state_dict) for live UI updates (throttled by caller).
+    v24: multi-proxy fallback — tries each configured proxy in order.
     """
-    ex = _make_exchange()
+    proxies = _get_all_proxies()
+
+    # v24: try proxies in order until one successfully loads markets
+    if "markets" not in st.session_state:
+        ex, active_proxy, proxy_idx = await _try_load_markets(proxies)
+        st.session_state["markets"]     = ex.markets
+        st.session_state["active_proxy"]     = active_proxy
+        st.session_state["active_proxy_idx"] = proxy_idx
+    else:
+        # Reuse cached markets; reconnect with last known good proxy
+        active_proxy = st.session_state.get("active_proxy", proxies[0] if proxies else "")
+        proxy_idx    = st.session_state.get("active_proxy_idx", 0)
+        ex = _make_exchange_with_proxy(active_proxy)
+        ex.markets = st.session_state["markets"]
+        ex.markets_by_id = {m["id"]: m for m in ex.markets.values()}
+
     try:
-        # v9b: cache market list in session_state to avoid repeated load_markets
-        if "markets" not in st.session_state:
-            await ex.load_markets()
-            st.session_state["markets"] = ex.markets
-        else:
-            ex.markets = st.session_state["markets"]
-            ex.markets_by_id = {m["id"]: m for m in ex.markets.values()}
 
         symbols = sorted([
             s for s, m in ex.markets.items()
@@ -2131,12 +2196,19 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
     sym       = f"{base}/USDT:USDT"
     logs      = []
 
-    ex = _make_exchange()
+    # v24: multi-proxy fallback — try each proxy until load_markets succeeds
+    proxies = _get_all_proxies()
     try:
-        await ex.load_markets()
+        ex, active_proxy, proxy_idx = await _try_load_markets(proxies)
+    except RuntimeError as _proxy_err:
+        logs.append(("Proxy", "❌ FAIL", str(_proxy_err)))
+        return logs
+    try:
         if sym not in ex.markets:
             logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Binance Futures"))
             return logs
+        logs.append(("Proxy", "✅ PASS",
+            f"Connected via proxy slot {proxy_idx + 1} ({_proxy_label(active_proxy)})"))
 
         sem = asyncio.Semaphore(10)
         pivot_tf  = cfg["pivot_tf"]
@@ -2671,7 +2743,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v24</span>
+    <span class="sc-badge blue">&#128640; v25</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
@@ -2746,12 +2818,41 @@ def main():
     # ══ TAB 1: FULL SCAN ══════════════════════════════════════════════
     with tab_scan:
 
-        # ── Proxy status ──────────────────────────────────────────────
-        _proxy = _get_proxy()
-        if _proxy:
-            _host = _proxy.split("@")[-1] if "@" in _proxy else _proxy.split("//")[-1]
+        # ── Proxy status banner ───────────────────────────────────────
+        _all_proxies  = _get_all_proxies()
+        _active_proxy = st.session_state.get("active_proxy", "")
+        _active_idx   = st.session_state.get("active_proxy_idx", -1)
+
+        if _all_proxies:
+            # Build slot chips: green = active, grey = standby, red = none
+            _slot_chips = []
+            for _i, _p in enumerate(_all_proxies):
+                _lbl   = _proxy_label(_p)
+                _is_active = (_i == _active_idx) or (_active_idx == -1 and _i == 0)
+                _chip_style = (
+                    "background:rgba(0,230,118,0.12);color:#00e676;"
+                    "border:1px solid rgba(0,230,118,0.35);"
+                ) if _is_active else (
+                    "background:rgba(255,255,255,0.04);color:#6a6a88;"
+                    "border:1px solid rgba(255,255,255,0.08);"
+                )
+                _dot = "🟢" if _is_active else "⚪"
+                _slot_chips.append(
+                    f'<span style="display:inline-flex;align-items:center;gap:5px;'
+                    f'padding:3px 10px;border-radius:20px;font-family:var(--mono);'
+                    f'font-size:0.72rem;{_chip_style}">' 
+                    f'{_dot} Slot {_i+1}: {_lbl}'
+                    f'{"&nbsp;<b style='color:#00e676'>ACTIVE</b>" if _is_active else " STANDBY"}'
+                    f'</span>'
+                )
+            _chips_html = "&nbsp;".join(_slot_chips)
             st.markdown(
-                f'<div class="sc-proxy-ok">&#128274; Proxy active &mdash; <b>{_host}</b> &middot; Binance geo-block bypassed</div>',
+                f'<div class="sc-proxy-ok" style="display:flex;align-items:center;'
+                f'flex-wrap:wrap;gap:6px;">'
+                f'&#128274;&nbsp;<b>{len(_all_proxies)} proxy slot(s) configured</b>'
+                f'&nbsp;&mdash;&nbsp;{_chips_html}'
+                f'&nbsp;&middot;&nbsp;<span style="color:#5a8a5a;font-size:0.78rem">'
+                f'auto-fallback enabled</span></div>',
                 unsafe_allow_html=True)
         else:
             st.markdown(
@@ -2761,12 +2862,13 @@ def main():
             with st.expander("How to set up a free proxy (3 min)"):
                 st.markdown("""
 1. Register at **https://proxy2.webshare.io** (free, no credit card)
-2. Go to **Proxy → List** → Download as `Username:Password@IP:Port`
+2. Go to **Proxy List** → copy as `Username:Password@host:port`
 3. In Streamlit → your app → **⋮ → Settings → Secrets**, add:
+```toml
+PROXY_URL   = "http://user1:pass1@p.webshare.io:80"
+PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 ```
-PROXY_URL = "http://user:pass@1.2.3.4:8080"
-```
-4. Save — app restarts in ~30s
+4. Save — app restarts in ~30s. Add up to 4 slots for auto-fallback.
 """)
 
         # ── Mode + Timeframes row ─────────────────────────────────────
