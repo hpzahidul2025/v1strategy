@@ -1,8 +1,8 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v31
+Binance Futures Scanner - ULTRA-FAST Edition v33
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v31 UPDATES over v30:
+v33 UPDATES over v32:
   UI:  Full mobile-first CSS rewrite with safe-area insets (iPhone notch/home bar).
        Bottom nav bar added — sticky scan/debug tabs pinned at bottom on mobile.
        Touch targets enforced at ≥48px everywhere (raised from 44px).
@@ -23,7 +23,7 @@ v31 UPDATES over v30:
        Safe-area padding applied to bottom of main container (notch phones).
   UI:  Header compresses to single-line title on ≤390px; subtitle hidden.
   UI:  All st.columns([...]) in main() wrapped with mobile-override CSS.
-  CHORE: Version bump to v31; file renamed binance_futures_scanner_v31.py.
+  CHORE: Version bump to v33; file renamed binance_futures_scanner_v33.py.
 
 v28 UPDATES over v27:
   FIX:  Export CSV and TXT now respect the active sort order — previously both
@@ -342,7 +342,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
     """
     total_min = int(tz_h * 60)
     delta = datetime.timedelta(minutes=total_min)
-    dt    = datetime.datetime.utcfromtimestamp(ms / 1000) + delta
+    dt    = datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc).replace(tzinfo=None) + delta
     sign  = "+" if tz_h >= 0 else "-"
     ah    = int(abs(tz_h))
     am    = int(round((abs(tz_h) - ah) * 60))
@@ -355,7 +355,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v31",
+    page_title="Binance Futures Scanner v33",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1258,14 +1258,7 @@ st.markdown("""
     .sc-pill-v2  { font-size: 0.68rem !important; padding: 4px 8px 4px 5px !important; }
     .pill-num-v2 { width: 15px !important; height: 15px !important; font-size: 0.58rem !important; }
 
-    /* ── Sort bar — collapses to 2×2 grid ────── */
-    [data-testid="stHorizontalBlock"]:has(#sort_newest),
-    [data-testid="stHorizontalBlock"]:has(#sort_oldest) {
-      display: grid !important;
-      grid-template-columns: 1fr 1fr !important;
-      flex-direction: unset !important;
-      gap: 5px !important;
-    }
+    /* ── Sort bar — now a selectbox, no override needed ──────── */
 
     /* ── Signal cards — 2-per-row ────────────── */
     .sc-grid {
@@ -1662,45 +1655,67 @@ st.markdown("""
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* ── Sort control bar ────────────────────────────────────────────── */
-  .sc-sort-bar {
+  /* ── Sort / Filter control ───────────────────────────────────────── */
+  .sc-sort-row {
     display: flex;
     align-items: center;
     gap: 8px;
     margin: 0 0 0.7rem;
-    flex-wrap: wrap;
   }
-  .sc-sort-label {
-    font-size: 0.62rem;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-  .sc-sort-btn {
+  .sc-sort-icon-pill {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 4px 12px;
+    padding: 5px 13px 5px 10px;
     border-radius: 20px;
     border: 1px solid var(--border2);
     background: var(--surface2);
-    font-size: 0.75rem;
-    font-weight: 600;
+    font-size: 0.76rem;
+    font-weight: 700;
     color: var(--text2);
     font-family: var(--mono);
-    cursor: pointer;
     white-space: nowrap;
-    transition: all 0.15s;
-    -webkit-tap-highlight-color: transparent;
+    letter-spacing: 0.04em;
   }
-  .sc-sort-btn:hover  { border-color: var(--blue); color: var(--blue); }
-  .sc-sort-btn.active {
+  .sc-sort-icon-pill.active {
     background: rgba(0,180,216,0.1);
-    border-color: rgba(0,180,216,0.5);
+    border-color: rgba(0,180,216,0.45);
     color: var(--blue);
-    box-shadow: 0 0 8px rgba(0,180,216,0.15);
+    box-shadow: 0 0 10px rgba(0,180,216,0.12);
+  }
+  /* Make the selectbox inline and compact — flush with pill */
+  .sc-sort-select [data-testid="stSelectbox"] {
+    margin: 0 !important;
+  }
+  .sc-sort-select [data-testid="stSelectbox"] > div > div {
+    background: var(--surface2) !important;
+    border: 1px solid var(--border2) !important;
+    border-radius: 20px !important;
+    padding: 4px 14px !important;
+    min-height: 34px !important;
+    font-size: 0.76rem !important;
+    font-weight: 600 !important;
+    color: var(--text2) !important;
+    font-family: var(--mono) !important;
+    transition: border-color 0.15s, box-shadow 0.15s !important;
+    cursor: pointer !important;
+  }
+  .sc-sort-select [data-testid="stSelectbox"] > div > div:hover {
+    border-color: rgba(0,180,216,0.5) !important;
+    color: var(--blue) !important;
+  }
+  /* Hide the label */
+  .sc-sort-select label { display: none !important; }
+  /* Mobile — make select full-touch-friendly */
+  @media (max-width: 640px) {
+    .sc-sort-row { gap: 6px !important; margin: 0 0 0.5rem !important; }
+    .sc-sort-icon-pill { font-size: 0.7rem !important; padding: 5px 10px 5px 8px !important; }
+    .sc-sort-select [data-testid="stSelectbox"] > div > div {
+      font-size: 0.78rem !important;
+      min-height: 40px !important;
+      padding: 6px 14px !important;
+      border-radius: 20px !important;
+    }
   }
 </style>
 """, unsafe_allow_html=True)
@@ -3121,7 +3136,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v31</span>
+    <span class="sc-badge blue">&#128640; v33</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
@@ -3132,7 +3147,7 @@ def main():
 
     with gear_col:
         st.markdown('<div style="height:1.35rem"></div>', unsafe_allow_html=True)
-        if st.button(gear_label, key="gear_btn", use_container_width=True,
+        if st.button(gear_label, key="gear_btn", width="stretch",
                      help="Timezone & time format settings"):
             st.session_state["show_tz_panel"] = not show_tz
             st.rerun()
@@ -3167,14 +3182,14 @@ def main():
                 unsafe_allow_html=True)
             tf_c1, tf_c2 = st.columns(2)
             with tf_c1:
-                if st.button("24h", key="btn_24h", use_container_width=True,
+                if st.button("24h", key="btn_24h", width="stretch",
                              type="primary" if time_fmt == "24h" else "secondary"):
                     if time_fmt != "24h":
                         st.session_state["time_fmt"] = "24h"
                         st.query_params["tf"] = "24h"
                         st.rerun()
             with tf_c2:
-                if st.button("12h", key="btn_12h", use_container_width=True,
+                if st.button("12h", key="btn_12h", width="stretch",
                              type="primary" if time_fmt == "12h" else "secondary"):
                     if time_fmt != "12h":
                         st.session_state["time_fmt"] = "12h"
@@ -3182,7 +3197,7 @@ def main():
                         st.rerun()
         with s_c3:
             st.markdown('<div style="height:1.55rem"></div>', unsafe_allow_html=True)
-            if st.button("✕ Close", key="close_tz", use_container_width=True):
+            if st.button("✕ Close", key="close_tz", width="stretch"):
                 st.session_state["show_tz_panel"] = False
                 st.rerun()
         st.markdown(
@@ -3273,12 +3288,12 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
         st.markdown("<div class='sc-mode-selector'>", unsafe_allow_html=True)
         _mc1, _mc2 = st.columns(2)
         with _mc1:
-            if st.button(lbl_15m, key="mode_btn_15m", use_container_width=True,
+            if st.button(lbl_15m, key="mode_btn_15m", width="stretch",
                          type="primary" if mode_key == "15m" else "secondary"):
                 st.session_state["scan_mode_sel"] = "15m"
                 st.rerun()
         with _mc2:
-            if st.button(lbl_5m, key="mode_btn_5m", use_container_width=True,
+            if st.button(lbl_5m, key="mode_btn_5m", width="stretch",
                          type="primary" if mode_key == "5m" else "secondary"):
                 st.session_state["scan_mode_sel"] = "5m"
                 st.rerun()
@@ -3334,9 +3349,9 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
         btn_c1, btn_c2 = st.columns([4, 1])
         with btn_c1:
             scan_clicked = st.button("&#128640;  Start Scan", type="primary", key="scan_btn",
-                                     use_container_width=True)
+                                     width="stretch")
         with btn_c2:
-            if st.button("&#128260;", key="clear_mkts", use_container_width=True,
+            if st.button("&#128260;", key="clear_mkts", width="stretch",
                          help="Refresh market list — clears cache and reloads from Binance"):
                 st.session_state.pop("markets", None)
                 st.rerun()
@@ -3506,46 +3521,45 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     '<p>No signals &mdash; market conditions did not meet all 4 stage filters.</p></div>',
                     unsafe_allow_html=True)
             else:
-                # ── Sort control bar ──────────────────────────────────
+                # ── Sort / Filter control ─────────────────────────────
                 cur_sort = st.session_state.get("results_sort", "newest")
-                st.markdown(
-                    "<div style='font-size:0.62rem;font-weight:800;text-transform:uppercase;"
-                    "letter-spacing:0.14em;color:#5a5a72;margin-bottom:0.3rem'>"
-                    "&#9650; Sort results</div>",
-                    unsafe_allow_html=True)
-                # Row 1: time sorts
-                srt_r1c1, srt_r1c2 = st.columns(2)
-                with srt_r1c1:
-                    if st.button("🕐 Newest first", key="sort_newest",
-                                 use_container_width=True,
-                                 type="primary" if cur_sort == "newest" else "secondary",
-                                 help="Newest signal timestamp first"):
-                        st.session_state["results_sort"] = "newest"
+                _sort_options = {
+                    "🕐  Newest first": "newest",
+                    "🕛  Oldest first": "oldest",
+                    "🔤  Name A → Z":   "name_az",
+                    "🔡  Name Z → A":   "name_za",
+                }
+                _sort_labels  = list(_sort_options.keys())
+                _sort_cur_lbl = next(
+                    (k for k, v in _sort_options.items() if v == cur_sort),
+                    _sort_labels[0]
+                )
+                _is_non_default = cur_sort != "newest"
+                pill_cls = "sc-sort-icon-pill active" if _is_non_default else "sc-sort-icon-pill"
+
+                _scol_icon, _scol_sel = st.columns([1, 3])
+                with _scol_icon:
+                    st.markdown(
+                        f"<div class='{pill_cls}' style='margin-top:6px'>"
+                        f"&#9651; Sort</div>",
+                        unsafe_allow_html=True)
+                with _scol_sel:
+                    st.markdown("<div class='sc-sort-select'>", unsafe_allow_html=True)
+                    _new_sort_lbl = st.selectbox(
+                        "sort_select_label",
+                        _sort_labels,
+                        index=_sort_labels.index(_sort_cur_lbl),
+                        key="sort_selectbox",
+                        label_visibility="collapsed",
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    _new_sort_key = _sort_options[_new_sort_lbl]
+                    if _new_sort_key != cur_sort:
+                        st.session_state["results_sort"] = _new_sort_key
                         st.rerun()
-                with srt_r1c2:
-                    if st.button("🕛 Oldest first", key="sort_oldest",
-                                 use_container_width=True,
-                                 type="primary" if cur_sort == "oldest" else "secondary",
-                                 help="Oldest signal timestamp first"):
-                        st.session_state["results_sort"] = "oldest"
-                        st.rerun()
-                # Row 2: name sorts
-                srt_r2c1, srt_r2c2 = st.columns(2)
-                with srt_r2c1:
-                    if st.button("🔤 Name A → Z", key="sort_az",
-                                 use_container_width=True,
-                                 type="primary" if cur_sort == "name_az" else "secondary",
-                                 help="Symbol name A to Z"):
-                        st.session_state["results_sort"] = "name_az"
-                        st.rerun()
-                with srt_r2c2:
-                    if st.button("🔡 Name Z → A", key="sort_za",
-                                 use_container_width=True,
-                                 type="primary" if cur_sort == "name_za" else "secondary",
-                                 help="Symbol name Z to A"):
-                        st.session_state["results_sort"] = "name_za"
-                        st.rerun()
-                st.markdown("<div style='margin-bottom:0.4rem'></div>", unsafe_allow_html=True)
+
+                st.markdown("<div style='margin-bottom:0.3rem'></div>",
+                            unsafe_allow_html=True)
 
                 # Apply sort to all four lists
                 cur_sort = st.session_state.get("results_sort", "newest")
@@ -3685,7 +3699,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                             }
                             # Show sorted df in table
                             st.dataframe(
-                                _df_sorted[display_cols], use_container_width=True,
+                                _df_sorted[display_cols], width="stretch",
                                 hide_index=True,
                                 height=min(540, 50 + 36 * len(_df_sorted)),
                                 column_config=col_cfg)
@@ -3696,12 +3710,12 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                                 "&#128196; Export CSV",
                                 data=_csv_bytes,
                                 file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.csv",
-                                mime="text/csv", use_container_width=True)
+                                mime="text/csv", width="stretch")
                             ec2.download_button(
                                 "&#128221; Export TXT",
                                 data=_txt_bytes,
                                 file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.txt",
-                                mime="text/plain", use_container_width=True)
+                                mime="text/plain", width="stretch")
 
     # ══ TAB 2: DEBUG SYMBOL ═══════════════════════════════════════════
     with tab_debug:
@@ -3722,7 +3736,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 value="BTC", key="sym_input"
             )
             dbg_go = st.button("&#128269;  Run Debug", type="primary", key="debug_btn",
-                               use_container_width=True)
+                               width="stretch")
 
         with d_col2:
             st.markdown(
@@ -3766,7 +3780,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                 st.dataframe(
                     df_dbg.style.map(_color, subset=["Status"]),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                     height=50 + 38 * len(rows),
                 )
 
