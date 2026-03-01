@@ -1,6 +1,14 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v23
+Binance Futures Scanner - ULTRA-FAST Edition v24
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v24 UPDATES over v23:
+  UI:   Settings panel (TZ + time format) hidden behind gear icon (⚙️) — click to reveal.
+  UI:   All-tab signals now rendered as stacked sections (Confirmed above, Waiting below)
+        instead of side-by-side two-column layout — easier to scan each group.
+  UI:   Debug S4 detail row now includes last-before event and first-after event
+        (icon + timestamp) for instant BOS/ChoCh context without scrolling logs.
+  CHORE: Version bump to v24; file renamed binance_futures_scanner_v24.py.
 
 v23 UPDATES over v22 (aligned with CLI v27):
   FIX:  debug_single Stage 4 AND stage3_worker — both used
@@ -287,7 +295,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v23",
+    page_title="Binance Futures Scanner v24",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1069,6 +1077,272 @@ st.markdown("""
     .sc-card-price { font-size: 1.1rem; }
     .sc-cnt .cnt-val { font-size: 1.4rem; }
     .sc-summary { padding: 0.7rem 0.8rem; }
+  }
+
+  /* ── Scan config section label ───────────────────────────────────── */
+  .sc-section-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.62rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    margin: 0.25rem 0 0.55rem;
+  }
+  .sc-section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--border2), transparent);
+  }
+
+  /* ── Mode selector cards ─────────────────────────────────────────── */
+  .sc-mode-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 0.65rem;
+  }
+  .sc-mode-card {
+    flex: 1;
+    padding: 0.9rem 1rem 0.8rem;
+    border-radius: var(--radius);
+    border: 1.5px solid var(--border2);
+    background: var(--surface);
+    cursor: default;
+    text-align: left;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.2s;
+  }
+  .sc-mode-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transition: opacity 0.2s;
+    background: radial-gradient(ellipse at 20% 50%, rgba(0,180,216,0.08) 0%, transparent 70%);
+  }
+  .sc-mode-card.mc-active {
+    border-color: rgba(0,180,216,0.55);
+    background: linear-gradient(135deg, rgba(0,180,216,0.07) 0%, var(--surface) 60%);
+    box-shadow: 0 0 0 1px rgba(0,180,216,0.15), 0 4px 24px rgba(0,180,216,0.1);
+  }
+  .sc-mode-card.mc-active::before { opacity: 1; }
+  .sc-mode-card.mc-active::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--blue), rgba(0,230,118,0.6));
+    border-radius: 12px 12px 0 0;
+  }
+  .mc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 5px;
+  }
+  .mc-tf-badge {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    color: var(--muted);
+  }
+  .sc-mode-card.mc-active .mc-tf-badge { color: var(--blue); }
+  .mc-check {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+  }
+  .sc-mode-card.mc-active .mc-check {
+    background: var(--blue);
+    border-color: var(--blue);
+    box-shadow: 0 0 8px rgba(0,180,216,0.4);
+  }
+  .mc-check-inner {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fff;
+    opacity: 0;
+    transform: scale(0);
+    transition: all 0.15s;
+  }
+  .sc-mode-card.mc-active .mc-check-inner { opacity: 1; transform: scale(1); }
+  .mc-chain {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sc-mode-card.mc-active .mc-chain { color: var(--text2); }
+  .mc-desc {
+    font-size: 0.67rem;
+    color: var(--muted);
+    margin-top: 4px;
+    line-height: 1.3;
+  }
+  .sc-mode-card.mc-active .mc-desc { color: #6a8aa0; }
+
+  /* ── TF pipeline flow ────────────────────────────────────────────── */
+  .sc-tf-flow {
+    display: flex;
+    align-items: stretch;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius);
+    overflow: hidden;
+    position: relative;
+    margin-bottom: 0.6rem;
+  }
+  .sc-tf-flow::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg,
+      #a78bfa 0%, #60a5fa 25%, #00b4d8 50%, #34d399 75%, #f87171 100%);
+  }
+  .sc-tf-node {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0.7rem 0.4rem 0.65rem;
+    gap: 3px;
+    border-right: 1px solid var(--border);
+    position: relative;
+    transition: background 0.15s;
+  }
+  .sc-tf-node:last-child { border-right: none; }
+  .sc-tf-node:hover { background: rgba(255,255,255,0.02); }
+  .sc-tf-node .tf-stage {
+    font-size: 0.55rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    line-height: 1;
+  }
+  .sc-tf-node .tf-val {
+    font-family: var(--mono);
+    font-size: 1.0rem;
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+  }
+  .sc-tf-node .tf-role {
+    font-size: 0.58rem;
+    color: var(--muted);
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .sc-tf-node:nth-child(1) .tf-val { color: #a78bfa; }
+  .sc-tf-node:nth-child(2) .tf-val { color: #60a5fa; }
+  .sc-tf-node:nth-child(3) .tf-val { color: #00b4d8; }
+  .sc-tf-node:nth-child(4) .tf-val { color: #34d399; }
+  .sc-tf-node:nth-child(5) .tf-val { color: #f87171; }
+  /* Arrow connector between nodes */
+  .sc-tf-arrow {
+    display: flex;
+    align-items: center;
+    padding: 0 0;
+    color: var(--border2);
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    width: 0;
+    overflow: visible;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* ── Enhanced rule pills ─────────────────────────────────────────── */
+  .sc-pills-v2 {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 0.75rem;
+  }
+  .sc-pill-v2 {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 8px;
+    padding: 5px 12px 5px 6px;
+    font-size: 0.76rem;
+    color: var(--text2);
+    font-family: var(--mono);
+    white-space: nowrap;
+    border: 1px solid var(--border2);
+    background: var(--surface);
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .sc-pill-v2::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+  }
+  .sc-pill-v2.s1::before { background: #a78bfa; }
+  .sc-pill-v2.s2::before { background: #60a5fa; }
+  .sc-pill-v2.s3::before { background: #34d399; }
+  .sc-pill-v2.s4::before { background: #f87171; }
+  .sc-pill-v2:hover { background: var(--surface2); }
+  .pill-num-v2 {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    font-size: 0.65rem;
+    font-weight: 800;
+    flex-shrink: 0;
+  }
+  .sc-pill-v2.s1 .pill-num-v2 { background: rgba(167,139,250,0.15); color: #a78bfa; }
+  .sc-pill-v2.s2 .pill-num-v2 { background: rgba(96,165,250,0.15);  color: #60a5fa; }
+  .sc-pill-v2.s3 .pill-num-v2 { background: rgba(52,211,153,0.15);  color: #34d399; }
+  .sc-pill-v2.s4 .pill-num-v2 { background: rgba(248,113,113,0.15); color: #f87171; }
+  .pill-arr-v2 { color: var(--border2); font-weight: 700; }
+
+  /* ── Settings panel (gear toggle) ───────────────────────────────── */
+  .sc-settings-panel {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius);
+    padding: 0.9rem 1.1rem 0.7rem;
+    margin-bottom: 0.65rem;
+    position: relative;
+    animation: settings-slide 0.18s ease;
+  }
+  .sc-settings-panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, rgba(0,180,216,0.5), rgba(167,139,250,0.4), transparent);
+    border-radius: 12px 12px 0 0;
+  }
+  @keyframes settings-slide {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 </style>
 """, unsafe_allow_html=True)
@@ -2040,9 +2314,25 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
                     break
 
             status_label = {"valid": "✅ VALID", "wait": "⏳ WAIT", "invalid": "❌ INVALID"}[choch_status]
-            detail_msg   = (
-                f"{len(events)} BOS/ChoCh events on {choch_tf.upper()}  |  "
-                f"checked {len(sig_ts_list)} signal(s) newest-first  |  best result: {choch_status.upper()}"
+
+            # ── Collect last-before and first-after events for detail ──
+            def _ev_str(ts_ev, ev_type, tz_h_=tz_h, tz_lbl=tz_label, tfmt=time_fmt):
+                ts_fmt = _fmt_ts(int(ts_ev), tz_h_, tz_lbl, tfmt)
+                icon = {"bull_choch": "🟢↑ChoCh", "bear_choch": "🔴↓ChoCh",
+                        "bull_bos":   "🟢↑BOS",   "bear_bos":   "🔴↓BOS"}.get(ev_type, ev_type)
+                return f"{icon} @ {ts_fmt}"
+
+            # Use the best (most-recent) signal ts for event context
+            best_sig_ts = max(sig_ts_list)
+            ev_before = [(ts, et) for ts, et in events if ts <  best_sig_ts]
+            ev_after  = [(ts, et) for ts, et in events if ts >= best_sig_ts]
+            last_bef_str  = _ev_str(*ev_before[-1]) if ev_before else "—"
+            first_aft_str = _ev_str(*ev_after[0])   if ev_after  else "—"
+
+            detail_msg = (
+                f"{len(events)} events on {choch_tf.upper()} | "
+                f"checked {len(sig_ts_list)} sig(s) | best: {choch_status.upper()} | "
+                f"last-before={last_bef_str} | first-after={first_aft_str}"
             )
             logs.append((f"S4 BOS/ChoCh [{choch_tf.upper()}]", status_label, detail_msg))
 
@@ -2309,42 +2599,44 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
 
 def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
                               tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> str:
-    """Render All tab as two columns: Confirmed left, Waiting right."""
-    # ── Confirmed column ──────────────────────────────────────────────
+    """Render All tab as stacked sections: Confirmed above, Waiting below (no side-by-side)."""
+    # ── Confirmed section ─────────────────────────────────────────────
     confirmed_parts = []
     if bv_list:
-        confirmed_parts.append(_signal_cards_html(bv_list, True,  True,  mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
+        confirmed_parts.append(_signal_cards_html(bv_list, True,  True,  mode_key, "sc-grid", tz_h, tz_label, time_fmt))
     if sv_list:
-        confirmed_parts.append(_signal_cards_html(sv_list, False, True,  mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
-    conf_body = "".join(confirmed_parts) if confirmed_parts else (
-        '<div class="sc-empty" style="padding:1rem"><div class="ico" style="font-size:1.4rem">&#128269;</div>'
-        '<p style="font-size:0.8rem">No confirmed signals</p></div>')
+        confirmed_parts.append(_signal_cards_html(sv_list, False, True,  mode_key, "sc-grid", tz_h, tz_label, time_fmt))
     conf_count = len(bv_list) + len(sv_list)
-    conf_col = (
-        f'<div>'
-        f'<div class="sc-col-header confirmed">&#9989; Confirmed &nbsp;<span style="opacity:0.7;font-weight:600">{conf_count}</span></div>'
-        f'{conf_body}'
-        f'</div>'
+    conf_section = (
+        f'<div class="sc-all-section">'
+        f'<div class="sc-col-header confirmed">&#9989; Confirmed &nbsp;'
+        f'<span style="opacity:0.7;font-weight:600">{conf_count}</span></div>'
+        + ("".join(confirmed_parts) if confirmed_parts else
+           '<div class="sc-empty" style="padding:0.8rem 1rem">'
+           '<div class="ico" style="font-size:1.3rem">&#128269;</div>'
+           '<p style="font-size:0.8rem">No confirmed signals</p></div>')
+        + '</div>'
     )
 
-    # ── Waiting column ────────────────────────────────────────────────
+    # ── Waiting section ───────────────────────────────────────────────
     waiting_parts = []
     if bw_list:
-        waiting_parts.append(_signal_cards_html(bw_list, True,  False, mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
+        waiting_parts.append(_signal_cards_html(bw_list, True,  False, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
     if sw_list:
-        waiting_parts.append(_signal_cards_html(sw_list, False, False, mode_key, "sc-col-grid", tz_h, tz_label, time_fmt))
-    wait_body = "".join(waiting_parts) if waiting_parts else (
-        '<div class="sc-empty" style="padding:1rem"><div class="ico" style="font-size:1.4rem">&#9203;</div>'
-        '<p style="font-size:0.8rem">No waiting signals</p></div>')
+        waiting_parts.append(_signal_cards_html(sw_list, False, False, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
     wait_count = len(bw_list) + len(sw_list)
-    wait_col = (
-        f'<div>'
-        f'<div class="sc-col-header waiting">&#9203; Waiting &nbsp;<span style="opacity:0.7;font-weight:600">{wait_count}</span></div>'
-        f'{wait_body}'
-        f'</div>'
+    wait_section = (
+        f'<div class="sc-all-section" style="margin-top:1rem">'
+        f'<div class="sc-col-header waiting">&#9203; Waiting &nbsp;'
+        f'<span style="opacity:0.7;font-weight:600">{wait_count}</span></div>'
+        + ("".join(waiting_parts) if waiting_parts else
+           '<div class="sc-empty" style="padding:0.8rem 1rem">'
+           '<div class="ico" style="font-size:1.3rem">&#9203;</div>'
+           '<p style="font-size:0.8rem">No waiting signals</p></div>')
+        + '</div>'
     )
 
-    return f'<div class="sc-all-layout">{conf_col}{wait_col}</div>'
+    return f'<div>{conf_section}{wait_section}</div>'
 
 
 def main():
@@ -2358,8 +2650,11 @@ def main():
     tz_short = f"UTC{sign_s}{ah_s:02d}:{am_s:02d}" if am_s else f"UTC{sign_s}{ah_s}"
     time_fmt = st.session_state.get("time_fmt", TIME_FMT_DEFAULT)
 
-    # ── Header ────────────────────────────────────────────────────────
-    hdr_col, tz_col = st.columns([5, 3])
+    # ── Header (full-width) ───────────────────────────────────────────
+    show_tz = st.session_state.get("show_tz_panel", False)
+    gear_label = "⚙️ Settings ▲" if show_tz else "⚙️ Settings"
+
+    hdr_col, gear_col = st.columns([7, 1])
     with hdr_col:
         st.markdown(f"""
 <div class="sc-header">
@@ -2376,7 +2671,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v23</span>
+    <span class="sc-badge blue">&#128640; v24</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
@@ -2385,53 +2680,66 @@ def main():
 </div>
 """, unsafe_allow_html=True)
 
-    with tz_col:
-        st.markdown("""
-<div style="height:0.9rem"></div>
-<div class="sc-tz-label">&#127758;&nbsp; Display Timezone</div>
-""", unsafe_allow_html=True)
-        tz_sel_idx = TZ_LABELS.index(tz_key) if tz_key in TZ_LABELS else 0
-        new_tz = st.selectbox(
-            "tz_selector",
-            TZ_LABELS,
-            index=tz_sel_idx,
-            key="tz_selectbox",
-            label_visibility="collapsed",
-        )
-        if new_tz != tz_key:
-            st.session_state["tz_key"] = new_tz
-            st.query_params["tz"] = new_tz
-            tz_key   = new_tz
-            tz_h     = TIMEZONES.get(new_tz, 0.0)
-            sign_s   = "+" if tz_h >= 0 else "-"
-            ah_s     = int(abs(tz_h)); am_s = int(round((abs(tz_h)-ah_s)*60))
-            tz_short = f"UTC{sign_s}{ah_s:02d}:{am_s:02d}" if am_s else f"UTC{sign_s}{ah_s}"
+    with gear_col:
+        st.markdown('<div style="height:1.35rem"></div>', unsafe_allow_html=True)
+        if st.button(gear_label, key="gear_btn", use_container_width=True,
+                     help="Timezone & time format settings"):
+            st.session_state["show_tz_panel"] = not show_tz
             st.rerun()
-        # ── Time format toggle ─────────────────────────────────────────
+
+    # ── Settings panel (hidden until gear clicked) ────────────────────
+    if st.session_state.get("show_tz_panel", False):
         st.markdown(
-            '<div class="sc-tz-label" style="margin-top:0.55rem">&#128336;&nbsp; Time Format</div>',
+            "<div class='sc-settings-panel'>",
             unsafe_allow_html=True)
-        tf_c1, tf_c2 = st.columns(2)
-        with tf_c1:
-            btn_24_type = "primary" if time_fmt == "24h" else "secondary"
-            if st.button("24h  (14:30)", key="btn_24h", use_container_width=True,
-                         type=btn_24_type):
-                if time_fmt != "24h":
-                    st.session_state["time_fmt"] = "24h"
-                    st.query_params["tf"] = "24h"
-                    st.rerun()
-        with tf_c2:
-            btn_12_type = "primary" if time_fmt == "12h" else "secondary"
-            if st.button("12h  (2:30 PM)", key="btn_12h", use_container_width=True,
-                         type=btn_12_type):
-                if time_fmt != "12h":
-                    st.session_state["time_fmt"] = "12h"
-                    st.query_params["tf"] = "12h"
-                    st.rerun()
+        s_c1, s_c2, s_c3 = st.columns([3, 2, 1])
+        with s_c1:
+            st.markdown(
+                '<div class="sc-tz-label">&#127758;&nbsp; Display Timezone</div>',
+                unsafe_allow_html=True)
+            tz_sel_idx = TZ_LABELS.index(tz_key) if tz_key in TZ_LABELS else 0
+            new_tz = st.selectbox(
+                "tz_selector", TZ_LABELS, index=tz_sel_idx,
+                key="tz_selectbox", label_visibility="collapsed",
+            )
+            if new_tz != tz_key:
+                st.session_state["tz_key"] = new_tz
+                st.query_params["tz"] = new_tz
+                tz_key   = new_tz
+                tz_h     = TIMEZONES.get(new_tz, 0.0)
+                sign_s   = "+" if tz_h >= 0 else "-"
+                ah_s     = int(abs(tz_h)); am_s = int(round((abs(tz_h)-ah_s)*60))
+                tz_short = f"UTC{sign_s}{ah_s:02d}:{am_s:02d}" if am_s else f"UTC{sign_s}{ah_s}"
+                st.rerun()
+        with s_c2:
+            st.markdown(
+                '<div class="sc-tz-label">&#128336;&nbsp; Time Format</div>',
+                unsafe_allow_html=True)
+            tf_c1, tf_c2 = st.columns(2)
+            with tf_c1:
+                if st.button("24h", key="btn_24h", use_container_width=True,
+                             type="primary" if time_fmt == "24h" else "secondary"):
+                    if time_fmt != "24h":
+                        st.session_state["time_fmt"] = "24h"
+                        st.query_params["tf"] = "24h"
+                        st.rerun()
+            with tf_c2:
+                if st.button("12h", key="btn_12h", use_container_width=True,
+                             type="primary" if time_fmt == "12h" else "secondary"):
+                    if time_fmt != "12h":
+                        st.session_state["time_fmt"] = "12h"
+                        st.query_params["tf"] = "12h"
+                        st.rerun()
+        with s_c3:
+            st.markdown('<div style="height:1.55rem"></div>', unsafe_allow_html=True)
+            if st.button("✕ Close", key="close_tz", use_container_width=True):
+                st.session_state["show_tz_panel"] = False
+                st.rerun()
         st.markdown(
-            f'<div style="font-size:0.68rem;color:#5a5a72;margin-top:3px;font-family:var(--mono)">'
-            f'Timezone &amp; format persist across reloads</div>',
+            '<div style="font-size:0.67rem;color:#5a5a72;margin-top:2px;font-family:var(--mono)">'
+            'Settings persist across reloads via URL query params</div>',
             unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     tab_scan, tab_debug = st.tabs(["&#128269;  Full Scan", "&#128027;  Debug Symbol"])
 
@@ -2462,33 +2770,108 @@ PROXY_URL = "http://user:pass@1.2.3.4:8080"
 """)
 
         # ── Mode + Timeframes row ─────────────────────────────────────
-        ctrl_col, tf_col = st.columns([2, 3])
-        with ctrl_col:
-            mode_choice = st.radio(
-                "**SCAN MODE**",
-                ["15M  (Daily → 4H → 1H → 15M)", "5M  (4H → 1H → 15M → 5M)"],
-                index=0,
-            )
-            mode_key = "15m" if mode_choice.startswith("15M") else "5m"
-            cfg = MODES[mode_key]
-        with tf_col:
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Pivot",   cfg["pivot_tf"].upper())
-            c2.metric("TDI/ADX", cfg["tdi_tf"].upper())
-            c3.metric("BB",      cfg["mid_tf"].upper())
-            c4.metric("Signal",  cfg["sig_tf"].upper())
-            c5.metric("ChoCh",   cfg["choch_tf"].upper())
+        # Persist mode selection across reruns
+        if "scan_mode_sel" not in st.session_state:
+            st.session_state["scan_mode_sel"] = "15m"
+        mode_key = st.session_state["scan_mode_sel"]
+        cfg = MODES[mode_key]
+
+        # Section label
+        st.markdown(
+            "<div class='sc-section-label'>&#9881;&nbsp; Scan Configuration</div>",
+            unsafe_allow_html=True)
+
+        # Mode selector cards (visual display)
+        def _active(k): return "mc-active" if mode_key == k else ""
+        def _check(k):
+            a = "sc-mode-card.mc-active " if mode_key == k else ""
+            return (f'<div class="mc-check"><div class="mc-check-inner"></div></div>')
+
+        st.markdown(
+            f"<div class='sc-mode-row'>"
+            # 15M card
+            f"<div class='sc-mode-card {_active('15m')}'>"
+            f"  <div class='mc-header'>"
+            f"    <span class='mc-tf-badge'>15M</span>"
+            f"    {_check('15m')}"
+            f"  </div>"
+            f"  <div class='mc-chain'>Daily &#8594; 4H &#8594; 1H &#8594; 15M</div>"
+            f"  <div class='mc-desc'>Swing / intraday  &middot;  650-bar ChoCh depth</div>"
+            f"</div>"
+            # 5M card
+            f"<div class='sc-mode-card {_active('5m')}'>"
+            f"  <div class='mc-header'>"
+            f"    <span class='mc-tf-badge'>5M</span>"
+            f"    {_check('5m')}"
+            f"  </div>"
+            f"  <div class='mc-chain'>4H &#8594; 1H &#8594; 15M &#8594; 5M</div>"
+            f"  <div class='mc-desc'>Scalp / short-term  &middot;  550-bar ChoCh depth</div>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True)
+
+        # Actual hidden mode toggle buttons
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            if st.button(
+                "✓ 15M selected" if mode_key == "15m" else "Switch to 15M",
+                key="mode_btn_15m",
+                use_container_width=True,
+                type="primary" if mode_key == "15m" else "secondary",
+            ):
+                st.session_state["scan_mode_sel"] = "15m"
+                st.rerun()
+        with _mc2:
+            if st.button(
+                "✓ 5M selected" if mode_key == "5m" else "Switch to 5M",
+                key="mode_btn_5m",
+                use_container_width=True,
+                type="primary" if mode_key == "5m" else "secondary",
+            ):
+                st.session_state["scan_mode_sel"] = "5m"
+                st.rerun()
+
+        # TF pipeline flow diagram
+        st.markdown(
+            f"<div class='sc-tf-flow'>"
+            f"<div class='sc-tf-node'>"
+            f"  <span class='tf-stage'>S1 · Pivot</span>"
+            f"  <span class='tf-val'>{cfg['pivot_tf'].upper()}</span>"
+            f"  <span class='tf-role'>HLC3 chain + ADX</span>"
+            f"</div>"
+            f"<div class='sc-tf-node'>"
+            f"  <span class='tf-stage'>S2 · TDI/KC</span>"
+            f"  <span class='tf-val'>{cfg['tdi_tf'].upper()}</span>"
+            f"  <span class='tf-role'>RSI · Keltner</span>"
+            f"</div>"
+            f"<div class='sc-tf-node'>"
+            f"  <span class='tf-stage'>S3 · BB</span>"
+            f"  <span class='tf-val'>{cfg['mid_tf'].upper()}</span>"
+            f"  <span class='tf-role'>BB pullback + KC</span>"
+            f"</div>"
+            f"<div class='sc-tf-node'>"
+            f"  <span class='tf-stage'>S3 · Signal</span>"
+            f"  <span class='tf-val'>{cfg['sig_tf'].upper()}</span>"
+            f"  <span class='tf-role'>Pine final sig</span>"
+            f"</div>"
+            f"<div class='sc-tf-node'>"
+            f"  <span class='tf-stage'>S4 · ChoCh</span>"
+            f"  <span class='tf-val'>{cfg['choch_tf'].upper()}</span>"
+            f"  <span class='tf-role'>BOS / ChoCh validate</span>"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True)
 
         # ── Rule pills ────────────────────────────────────────────────
         st.markdown(
-            f"<div class='sc-pills'>"
-            f"<span class='sc-pill'><span class='num'>S1</span>"
-            f"{cfg['pivot_tf'].upper()} Pivot <span class='arr'>&#8594;</span> ADX&gt;{ADX_TH:.0f}</span>"
-            f"<span class='sc-pill'><span class='num'>S2</span>"
-            f"TDI direction <span class='arr'>&#8594;</span> KC Band</span>"
-            f"<span class='sc-pill'><span class='num'>S3</span>"
-            f"{cfg['mid_tf'].upper()} BB Pullback <span class='arr'>&#8594;</span> {cfg['sig_tf'].upper()} Pine Signal</span>"
-            f"<span class='sc-pill'><span class='num'>S4</span>"
+            f"<div class='sc-pills-v2'>"
+            f"<span class='sc-pill-v2 s1'><span class='pill-num-v2'>S1</span>"
+            f"{cfg['pivot_tf'].upper()} Pivot <span class='pill-arr-v2'>&#8594;</span> ADX&gt;{ADX_TH:.0f}</span>"
+            f"<span class='sc-pill-v2 s2'><span class='pill-num-v2'>S2</span>"
+            f"TDI direction <span class='pill-arr-v2'>&#8594;</span> KC Band</span>"
+            f"<span class='sc-pill-v2 s3'><span class='pill-num-v2'>S3</span>"
+            f"{cfg['mid_tf'].upper()} BB+KC <span class='pill-arr-v2'>&#8594;</span> {cfg['sig_tf'].upper()} Pine Signal</span>"
+            f"<span class='sc-pill-v2 s4'><span class='pill-num-v2'>S4</span>"
             f"{cfg['choch_tf'].upper()} BOS/ChoCh Validate</span>"
             f"</div>",
             unsafe_allow_html=True,
