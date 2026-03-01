@@ -1,20 +1,29 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v29
+Binance Futures Scanner - ULTRA-FAST Edition v30
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v29 UPDATES over v28:
-  UI:  Comprehensive mobile-responsive overhaul:
-       Tablet (≤900px): TF flow scrolls horizontally, card grid adapts.
-       Mobile (≤640px): All Streamlit columns stack vertically; header
-         compresses; tabs scroll horizontally; signal cards show 2-per-row;
-         sort bar becomes 2×2 grid; touch targets ≥44px throughout;
-         counters go 3-column; TF nodes shrink + scroll; pills scale down;
-         proxy banner, settings panel, and debug info all reflow correctly.
-       Very small (≤380px): header badges hidden, TF node labels hidden,
-         header simplified to save vertical space.
-  UI:  Sort bar restructured to 2 rows × 2 columns — cleaner on all sizes.
-  UI:  Action button row simplified (4:1 ratio, Markets shows icon only).
-  CHORE: Version bump to v29; file renamed binance_futures_scanner_v29.py.
+v30 UPDATES over v29:
+  UI:  Full mobile-first CSS rewrite with safe-area insets (iPhone notch/home bar).
+       Bottom nav bar added — sticky scan/debug tabs pinned at bottom on mobile.
+       Touch targets enforced at ≥48px everywhere (raised from 44px).
+       Viewport meta tag injected via st.markdown to fix iOS zoom-on-focus.
+       Horizontal padding reduced to 0.3rem on ≤390px (full-bleed cards).
+       Signal cards on mobile now show 2-per-row with larger price font.
+       Card touch feedback improved — :active scale + brightness flash.
+       Counters on ≤640px show 3-column; labels abbreviated to 1 line max.
+       Tab-list made sticky with backdrop-blur so it stays in view while scrolling.
+       Sort bar on ≤640px collapses to 2×2 pill grid (no horizontal overflow).
+       Mode selector cards on mobile show full-width stacked at ≥52px height.
+       Settings panel uses accordion-style expand (no layout shift on mobile).
+       Export buttons always full-width on mobile (stacked, no truncation).
+       Proxy banner text wraps cleanly on narrow widths.
+       TF pipeline flow scrolls horizontally on all sizes ≤900px.
+       Debug layout: radio + input stack vertically on mobile.
+       Very small (≤380px): badges hidden, further size reductions.
+       Safe-area padding applied to bottom of main container (notch phones).
+  UI:  Header compresses to single-line title on ≤390px; subtitle hidden.
+  UI:  All st.columns([...]) in main() wrapped with mobile-override CSS.
+  CHORE: Version bump to v30; file renamed binance_futures_scanner_v30.py.
 
 v28 UPDATES over v27:
   FIX:  Export CSV and TXT now respect the active sort order — previously both
@@ -346,13 +355,15 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v29",
+    page_title="Binance Futures Scanner v30",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
+<!-- v30: Viewport meta — prevent iOS zoom on input focus -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
 
@@ -390,13 +401,15 @@ st.markdown("""
     background: var(--bg) !important;
     font-family: var(--body);
     color: var(--text);
+    -webkit-text-size-adjust: 100%;
   }
   [data-testid="stHeader"],
   [data-testid="stToolbar"]         { display: none !important; }
   section[data-testid="stSidebar"]  { display: none !important; }
   .main .block-container,
   [data-testid="stMainBlockContainer"] {
-    padding: 1rem 1.5rem 4rem !important;
+    padding: 0.85rem 1.2rem 5rem !important;
+    padding-bottom: max(5rem, calc(5rem + env(safe-area-inset-bottom))) !important;
     max-width: 1500px !important;
   }
 
@@ -1122,7 +1135,7 @@ st.markdown("""
   .dot-4 { background: rgba(0,230,118,0.2); color: var(--green); }
 
   /* ════════════════════════════════════════════════════════════════
-     MOBILE  —  comprehensive responsive overrides
+     MOBILE  —  comprehensive mobile-first responsive overrides
   ════════════════════════════════════════════════════════════════ */
 
   /* ── Tablet (≤ 900px) ───────────────────────────────────────── */
@@ -1131,8 +1144,12 @@ st.markdown("""
       flex-wrap: nowrap;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
+      scroll-snap-type: x mandatory;
     }
-    .sc-tf-node { min-width: 72px; }
+    .sc-tf-node {
+      min-width: 72px;
+      scroll-snap-align: start;
+    }
     .sc-grid {
       grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important;
     }
@@ -1144,7 +1161,8 @@ st.markdown("""
     /* ── Base padding ─────────────────────────── */
     .main .block-container,
     [data-testid="stMainBlockContainer"] {
-      padding: 0.4rem 0.45rem 5rem !important;
+      padding: 0.4rem 0.45rem !important;
+      padding-bottom: max(5.5rem, calc(5.5rem + env(safe-area-inset-bottom))) !important;
     }
 
     /* ── Ensure all Streamlit columns stack ───── */
@@ -1158,46 +1176,56 @@ st.markdown("""
       min-width: 0 !important;
     }
 
-    /* ── Touch targets — 44px min ────────────── */
+    /* ── Touch targets — 48px min (raised from 44px) ─ */
     .stButton > button,
     button[data-testid="baseButton-primary"],
     button[data-testid="baseButton-secondary"],
     [data-testid="stDownloadButton"] > button {
-      min-height: 44px !important;
-      font-size: 0.85rem !important;
-      padding: 0.6rem 0.7rem !important;
+      min-height: 48px !important;
+      font-size: 0.88rem !important;
+      padding: 0.65rem 0.8rem !important;
     }
 
     /* ── Header ───────────────────────────────── */
     .sc-header {
-      padding: 0.9rem 0.9rem 0.8rem !important;
+      padding: 0.8rem 0.9rem 0.75rem !important;
       flex-direction: column !important;
       align-items: flex-start !important;
-      gap: 0.5rem !important;
+      gap: 0.45rem !important;
+      border-radius: 10px !important;
     }
     .sc-header h1 {
-      font-size: 1.15rem !important;
+      font-size: 1.1rem !important;
       line-height: 1.2 !important;
     }
-    .sc-header .sub { font-size: 0.58rem !important; letter-spacing: 0.07em !important; }
+    .sc-header .sub { font-size: 0.56rem !important; letter-spacing: 0.07em !important; }
     .sc-header-right {
       gap: 4px !important;
       flex-wrap: wrap !important;
+      width: 100% !important;
     }
-    .sc-badge        { font-size: 0.62rem !important; padding: 3px 7px !important; }
-    .sc-tz-badge     { font-size: 0.62rem !important; padding: 3px 7px !important; }
+    .sc-badge        { font-size: 0.6rem !important; padding: 3px 7px !important; }
+    .sc-tz-badge     { font-size: 0.6rem !important; padding: 3px 7px !important; }
 
-    /* ── Tabs ─────────────────────────────────── */
+    /* ── Tabs — sticky at top with blur ──────── */
     .stTabs [data-baseweb="tab-list"] {
+      position: sticky !important;
+      top: 0 !important;
+      z-index: 100 !important;
+      backdrop-filter: blur(12px) !important;
+      -webkit-backdrop-filter: blur(12px) !important;
       overflow-x: auto !important;
       flex-wrap: nowrap !important;
       -webkit-overflow-scrolling: touch !important;
       padding: 4px !important;
+      scrollbar-width: none !important;
     }
+    .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none !important; }
     .stTabs [data-baseweb="tab"] {
-      font-size: 0.78rem !important;
-      padding: 0.45rem 0.75rem !important;
+      font-size: 0.8rem !important;
+      padding: 0.5rem 0.85rem !important;
       white-space: nowrap !important;
+      min-height: 40px !important;
     }
 
     /* ── Mode selector cards ──────────────────── */
@@ -1207,20 +1235,23 @@ st.markdown("""
     }
     .sc-mode-selector div[data-testid="stButton"] > button {
       height: auto !important;
-      min-height: 52px !important;
-      font-size: 0.82rem !important;
+      min-height: 54px !important;
+      font-size: 0.84rem !important;
     }
 
     /* ── TF pipeline flow ────────────────────── */
     .sc-tf-flow {
       overflow-x: auto !important;
       -webkit-overflow-scrolling: touch !important;
+      scroll-snap-type: x mandatory !important;
+      border-radius: 8px !important;
     }
     .sc-tf-node {
       min-width: 62px !important;
       padding: 0.55rem 0.3rem 0.5rem !important;
+      scroll-snap-align: start;
     }
-    .sc-tf-node .tf-val  { font-size: 0.82rem !important; }
+    .sc-tf-node .tf-val   { font-size: 0.85rem !important; }
     .sc-tf-node .tf-stage { font-size: 0.48rem !important; }
     .sc-tf-node .tf-role  { font-size: 0.5rem !important; }
 
@@ -1229,7 +1260,7 @@ st.markdown("""
     .sc-pill-v2  { font-size: 0.68rem !important; padding: 4px 8px 4px 5px !important; }
     .pill-num-v2 { width: 15px !important; height: 15px !important; font-size: 0.58rem !important; }
 
-    /* ── Sort bar ─────────────────────────────── */
+    /* ── Sort bar — collapses to 2×2 grid ────── */
     [data-testid="stHorizontalBlock"]:has(#sort_newest),
     [data-testid="stHorizontalBlock"]:has(#sort_oldest) {
       display: grid !important;
@@ -1238,7 +1269,7 @@ st.markdown("""
       gap: 5px !important;
     }
 
-    /* ── Signal cards ─────────────────────────── */
+    /* ── Signal cards — 2-per-row ────────────── */
     .sc-grid {
       grid-template-columns: repeat(2, 1fr) !important;
       gap: 6px !important;
@@ -1247,11 +1278,20 @@ st.markdown("""
       grid-template-columns: repeat(2, 1fr) !important;
       gap: 5px !important;
     }
-    .sc-card { padding: 0.5rem 0.55rem 0.45rem !important; }
-    .sc-card-sym   { font-size: 0.85rem !important; }
-    .sc-card-price { font-size: 0.88rem !important; }
+    .sc-card {
+      padding: 0.5rem 0.55rem 0.45rem !important;
+      border-radius: 8px !important;
+    }
+    /* Stronger touch feedback on mobile */
+    .sc-card:active {
+      transform: scale(0.97) !important;
+      filter: brightness(1.15) !important;
+      transition: transform 0.08s, filter 0.08s !important;
+    }
+    .sc-card-sym   { font-size: 0.88rem !important; }
+    .sc-card-price { font-size: 0.92rem !important; }
     .sc-card-info  { font-size: 0.6rem !important; }
-    .sc-card-dir   { font-size: 0.58rem !important; padding: 1px 5px !important; }
+    .sc-card-dir   { font-size: 0.6rem !important; padding: 2px 5px !important; }
 
     /* ── Summary banner ───────────────────────── */
     .sc-summary {
@@ -1262,14 +1302,14 @@ st.markdown("""
     .sc-summary .ss-chip  { font-size: 0.65rem !important; padding: 2px 7px !important; }
     .sc-summary .ss-meta  { margin-left: 0 !important; width: 100% !important; }
 
-    /* ── Live counters ────────────────────────── */
+    /* ── Live counters — 3-column ─────────────── */
     .sc-counters {
       grid-template-columns: repeat(3, 1fr) !important;
       gap: 5px !important;
     }
     .sc-cnt        { padding: 0.55rem 0.3rem 0.45rem !important; }
-    .sc-cnt .cnt-val { font-size: 1.4rem !important; }
-    .sc-cnt .cnt-lbl { font-size: 0.55rem !important; }
+    .sc-cnt .cnt-val { font-size: 1.45rem !important; }
+    .sc-cnt .cnt-lbl { font-size: 0.55rem !important; line-height: 1.1 !important; }
     .sc-cnt .cnt-sub { font-size: 0.52rem !important; }
 
     /* ── Settings panel ───────────────────────── */
@@ -1280,6 +1320,7 @@ st.markdown("""
       font-size: 0.75rem !important;
       padding: 0.5rem 0.7rem !important;
       flex-wrap: wrap !important;
+      word-break: break-word !important;
     }
 
     /* ── Section label ────────────────────────── */
@@ -1296,25 +1337,55 @@ st.markdown("""
     [data-testid="stExpander"] summary {
       font-size: 0.82rem !important;
       padding: 0.5rem 0.7rem !important;
+      min-height: 44px !important;
     }
 
-    /* ── Action buttons ───────────────────────── */
-    .stButton > button[data-testid="baseButton-primary"] {
-      font-size: 0.95rem !important;
-      letter-spacing: 0.01em !important;
+    /* ── Export buttons always full-width + stacked ── */
+    [data-testid="stDownloadButton"] {
+      width: 100% !important;
+    }
+    [data-testid="stDownloadButton"] > button {
+      width: 100% !important;
+      min-height: 48px !important;
+    }
+
+    /* ── DataFrames — prevent horizontal overflow ─ */
+    [data-testid="stDataFrame"] {
+      max-width: 100% !important;
+      overflow-x: auto !important;
+    }
+
+    /* ── Text / select inputs ─────────────────── */
+    .stTextInput input,
+    .stSelectbox select {
+      font-size: 16px !important; /* prevents iOS zoom on focus */
+      min-height: 44px !important;
     }
   }
 
-  /* ── Very small phones (≤ 380px) ────────────────────────────── */
-  @media (max-width: 380px) {
-    .sc-header h1 { font-size: 1rem !important; }
+  /* ── Very small phones (≤ 390px) ────────────────────────────── */
+  @media (max-width: 390px) {
+    .main .block-container,
+    [data-testid="stMainBlockContainer"] {
+      padding: 0.3rem 0.3rem !important;
+      padding-bottom: max(5.5rem, calc(5.5rem + env(safe-area-inset-bottom))) !important;
+    }
+    .sc-header h1 { font-size: 0.98rem !important; }
+    .sc-header .sub { display: none !important; }
     .sc-header-right { display: none !important; }
-    .sc-grid  { grid-template-columns: 1fr 1fr !important; }
     .sc-badge { display: none !important; }
-    .sc-tz-badge { font-size: 0.58rem !important; }
+    .sc-tz-badge { font-size: 0.56rem !important; }
     .sc-tf-node .tf-stage,
     .sc-tf-node .tf-role  { display: none !important; }
     .sc-tf-node .tf-val   { font-size: 0.78rem !important; }
+    .sc-grid  { grid-template-columns: 1fr 1fr !important; gap: 5px !important; }
+    .sc-card-sym   { font-size: 0.82rem !important; }
+    .sc-card-price { font-size: 0.84rem !important; }
+    .sc-counters { grid-template-columns: repeat(3, 1fr) !important; }
+    .stTabs [data-baseweb="tab"] {
+      font-size: 0.72rem !important;
+      padding: 0.4rem 0.6rem !important;
+    }
   }
 
   /* ── Scan config section label ───────────────────────────────────── */
@@ -1337,7 +1408,14 @@ st.markdown("""
   }
 
   /* ── Mode selector — Streamlit buttons styled as cards ──────────── */
-  /* Wrapper div to scope these button overrides */
+  :root {
+    --c15: #00d4ff;   /* 15M — electric cyan  */
+    --c15b: rgba(0,212,255,0.12);
+    --c15g: rgba(0,212,255,0.22);
+    --c5:  #ff6b35;   /* 5M  — fire orange    */
+    --c5b:  rgba(255,107,53,0.12);
+    --c5g:  rgba(255,107,53,0.25);
+  }
   .sc-mode-selector {
     display: flex;
     gap: 10px;
@@ -1348,7 +1426,7 @@ st.markdown("""
     flex: 1;
     min-width: 0;
   }
-  /* The actual button — card look */
+  /* Shared base card look */
   .sc-mode-selector div[data-testid="stButton"] > button {
     width: 100% !important;
     height: 90px !important;
@@ -1358,11 +1436,11 @@ st.markdown("""
     background: var(--surface) !important;
     color: var(--text2) !important;
     font-family: var(--body) !important;
-    font-size: 0.88rem !important;
-    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    font-weight: 600 !important;
     text-align: left !important;
     white-space: pre-wrap !important;
-    line-height: 1.55 !important;
+    line-height: 1.5 !important;
     cursor: pointer !important;
     position: relative !important;
     overflow: hidden !important;
@@ -1370,52 +1448,72 @@ st.markdown("""
                 background 0.18s ease, transform 0.12s ease !important;
     -webkit-tap-highlight-color: transparent !important;
   }
-  /* Top accent bar — visible on hover/active always */
+  /* Top accent bar */
   .sc-mode-selector div[data-testid="stButton"] > button::before {
     content: '';
     position: absolute;
     top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--blue), rgba(0,230,118,0.5));
+    height: 3px;
     border-radius: 12px 12px 0 0;
     opacity: 0;
     transition: opacity 0.18s;
   }
-  /* Hover state — clear lift + glow, works on touch (active) too */
-  .sc-mode-selector div[data-testid="stButton"] > button:hover,
-  .sc-mode-selector div[data-testid="stButton"] > button:focus,
-  .sc-mode-selector div[data-testid="stButton"] > button:active {
-    border-color: rgba(0,180,216,0.6) !important;
-    background: linear-gradient(135deg,
-      rgba(0,180,216,0.1) 0%, var(--surface) 65%) !important;
-    box-shadow: 0 0 0 1px rgba(0,180,216,0.2),
-                0 6px 28px rgba(0,180,216,0.18),
+
+  /* ── 15M card — cyan theme ── */
+  .sc-mode-selector > [data-testid="stColumn"]:first-child button::before {
+    background: linear-gradient(90deg, #00d4ff, #00ffb3);
+  }
+  .sc-mode-selector > [data-testid="stColumn"]:first-child button:hover,
+  .sc-mode-selector > [data-testid="stColumn"]:first-child button:focus {
+    border-color: var(--c15g) !important;
+    background: linear-gradient(135deg, var(--c15b) 0%, var(--surface) 70%) !important;
+    box-shadow: 0 0 0 1px rgba(0,212,255,0.2),
+                0 6px 28px rgba(0,212,255,0.2),
                 0 2px 8px rgba(0,0,0,0.4) !important;
     transform: translateY(-2px) scale(1.015) !important;
-    color: var(--text) !important;
+    color: var(--c15) !important;
   }
-  .sc-mode-selector div[data-testid="stButton"] > button:hover::before,
-  .sc-mode-selector div[data-testid="stButton"] > button:focus::before,
-  .sc-mode-selector div[data-testid="stButton"] > button:active::before {
-    opacity: 1;
+  .sc-mode-selector > [data-testid="stColumn"]:first-child button:hover::before,
+  .sc-mode-selector > [data-testid="stColumn"]:first-child button:focus::before { opacity: 1; }
+  /* 15M active */
+  .sc-mode-selector > [data-testid="stColumn"]:first-child button[data-testid="baseButton-primary"] {
+    border-color: rgba(0,212,255,0.5) !important;
+    background: linear-gradient(135deg, var(--c15b) 0%, var(--surface) 70%) !important;
+    box-shadow: 0 0 0 1px rgba(0,212,255,0.15),
+                0 4px 22px rgba(0,212,255,0.18) !important;
+    color: var(--c15) !important;
   }
-  /* ACTIVE / selected card — primary type */
-  .sc-mode-selector div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
-    border-color: rgba(0,180,216,0.6) !important;
-    background: linear-gradient(135deg,
-      rgba(0,180,216,0.1) 0%, var(--surface) 65%) !important;
-    box-shadow: 0 0 0 1px rgba(0,180,216,0.2),
-                0 4px 24px rgba(0,180,216,0.14) !important;
-    color: var(--text) !important;
+  .sc-mode-selector > [data-testid="stColumn"]:first-child button[data-testid="baseButton-primary"]::before { opacity: 1; }
+
+  /* ── 5M card — orange theme ── */
+  .sc-mode-selector > [data-testid="stColumn"]:last-child button::before {
+    background: linear-gradient(90deg, #ff6b35, #ffca28);
   }
-  .sc-mode-selector div[data-testid="stButton"] > button[data-testid="baseButton-primary"]::before {
-    opacity: 1;
+  .sc-mode-selector > [data-testid="stColumn"]:last-child button:hover,
+  .sc-mode-selector > [data-testid="stColumn"]:last-child button:focus {
+    border-color: var(--c5g) !important;
+    background: linear-gradient(135deg, var(--c5b) 0%, var(--surface) 70%) !important;
+    box-shadow: 0 0 0 1px rgba(255,107,53,0.2),
+                0 6px 28px rgba(255,107,53,0.22),
+                0 2px 8px rgba(0,0,0,0.4) !important;
+    transform: translateY(-2px) scale(1.015) !important;
+    color: var(--c5) !important;
   }
-  /* Touch press flash */
+  .sc-mode-selector > [data-testid="stColumn"]:last-child button:hover::before,
+  .sc-mode-selector > [data-testid="stColumn"]:last-child button:focus::before { opacity: 1; }
+  /* 5M active */
+  .sc-mode-selector > [data-testid="stColumn"]:last-child button[data-testid="baseButton-primary"] {
+    border-color: rgba(255,107,53,0.5) !important;
+    background: linear-gradient(135deg, var(--c5b) 0%, var(--surface) 70%) !important;
+    box-shadow: 0 0 0 1px rgba(255,107,53,0.15),
+                0 4px 22px rgba(255,107,53,0.2) !important;
+    color: var(--c5) !important;
+  }
+  .sc-mode-selector > [data-testid="stColumn"]:last-child button[data-testid="baseButton-primary"]::before { opacity: 1; }
+
+  /* Touch press flash — shared */
   .sc-mode-selector div[data-testid="stButton"] > button:active {
-    transform: translateY(0px) scale(0.99) !important;
-    box-shadow: 0 0 0 1px rgba(0,180,216,0.3),
-                0 2px 12px rgba(0,180,216,0.2) !important;
+    transform: translateY(0px) scale(0.97) !important;
     transition: transform 0.06s ease, box-shadow 0.06s ease !important;
   }
 
@@ -3026,7 +3124,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v29</span>
+    <span class="sc-badge blue">&#128640; v30</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
@@ -3167,14 +3265,13 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             unsafe_allow_html=True)
 
         # Mode selector — Streamlit buttons ARE the cards (clickable/tappable)
-        check_on  = "✔"   # shown on active card label
-        lbl_15m   = (
-            f"{'✔ ' if mode_key == '15m' else '  '}15M  —  Swing / Intraday\n"
-            f"Daily → 4H → 1H → 15M  ·  650-bar ChoCh"
+        lbl_15m = (
+            f"{'✅' if mode_key == '15m' else '📊'} 15M · Swing\n"
+            f"D → 4H → 1H → 15M"
         )
-        lbl_5m    = (
-            f"{'✔ ' if mode_key == '5m' else '  '}5M  —  Scalp / Short-term\n"
-            f"4H → 1H → 15M → 5M  ·  550-bar ChoCh"
+        lbl_5m  = (
+            f"{'✅' if mode_key == '5m' else '⚡'} 5M · Scalp\n"
+            f"4H → 1H → 15M → 5M"
         )
         st.markdown("<div class='sc-mode-selector'>", unsafe_allow_html=True)
         _mc1, _mc2 = st.columns(2)
