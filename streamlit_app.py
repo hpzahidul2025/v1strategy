@@ -1,8 +1,29 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v18
+Binance Futures Scanner - ULTRA-FAST Edition v20
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v18 UPDATES over v17:
+v20 FIXES over v19 (aligned with CLI v21):
+  FIX: _parse_det_card — ADX regex changed from r"ADX_(?:cur|peak|end)=([\\d.]+)"
+       to r"ADX_end=([\\d.]+)" with fallback to r"ADX_peak=([\\d.]+)" so that
+       signal cards display the CURRENT ADX (end-of-window value) rather than
+       the historical peak, matching v21 CLI _parse_det() behavior. The full
+       data table still shows both ADX_Peak and ADX_End columns via _parse_row().
+  FIX: stage3_worker det string — sig count now pluralized correctly:
+       "(1 sig)" vs "(2 sigs)" matching v21 CLI sig_label format. The
+       _parse_det_card n_sigs regex r"[(][\\d+) sig" matches both forms.
+  FIX: _parse_det_card — simplified redundant return expression:
+       "adx": adx_v if adx_v != "—" else "—" → "adx": adx_v
+       (condition was always True; no behavioral change)
+
+v19 FIXES over v18:
+  FIX: st variable shadowing — validate_choch result loop variable renamed from
+       `st` → `choch_result` in stage3_worker and debug_single, eliminating
+       silent shadowing of the `import streamlit as st` module reference
+  FIX: _parse_det_card — removed duplicate `import re as _re2` inside function
+       body; now uses module-level `_re` import consistently throughout
+  FIX: _parse_det_card — removed dead-code else branch that searched ADX with
+       the identical regex pattern as the primary match (would never produce
+       a different result, causing confusing unreachable code)
   FEAT: 12h / 24h time format toggle — persists via URL query param ?tf=
   FEAT: Active time format shown as badge in header (🕐 12H / 24H)
   FEAT: time_fmt threaded through all timestamp contexts (cards, table, CSV, TXT, Debug tab)
@@ -215,7 +236,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v18",
+    page_title="Binance Futures Scanner v20",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1605,11 +1626,11 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
         events    = calc_bos_choch(dc, left=BOS_LR, right=BOS_LR)
         best_rank = -1
         for sig_ts_ms in reversed(sig_ts_list):   # newest → oldest
-            st   = validate_choch(events, sig_ts_ms, want_sell)
-            rank = RANK[st]
+            choch_result = validate_choch(events, sig_ts_ms, want_sell)
+            rank = RANK[choch_result]
             if rank > best_rank:
                 best_rank    = rank
-                choch_status = st
+                choch_status = choch_result
             if choch_status == "valid":
                 break
 
@@ -1619,6 +1640,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     side      = "SELL" if want_sell else "BUY"
     n_sigs    = len(sig_ts_list)
     last_sig_ts = sig_ts_list[-1]
+    sig_label = f"{n_sigs} sig" + ("s" if n_sigs > 1 else "")
 
     # Last signal bar close price
     ts_sig_arr  = ds.ts.values.astype(np.int64)
@@ -1628,7 +1650,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
 
     choch_label = ("✓ChoCh:VALID" if choch_status == "valid"
                    else f"⏳ChoCh:WAIT[{choch_tf.upper()}]")
-    det = (f"{detail} | {mid_tf.upper()}_BB_pullback✓ [{sig_tf.upper()} FinalSignal✓ ({n_sigs} sig)]"
+    det = (f"{detail} | {mid_tf.upper()}_BB_pullback✓ [{sig_tf.upper()} FinalSignal✓ ({sig_label})]"
            f" [{choch_label}] [window@pivot_ts]"
            f" sig_ts_ms={last_sig_ts} sig_price={last_sig_price:.8g}")
     return (side, sym, det, pivot_ts, choch_status)
@@ -1881,11 +1903,11 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             RANK     = {"valid": 2, "wait": 1, "invalid": 0}
             best_rank = -1
             for sig_ts_ms in reversed(sig_ts_list):
-                st   = validate_choch(events, sig_ts_ms, want_sell)
-                rank = RANK[st]
+                choch_result = validate_choch(events, sig_ts_ms, want_sell)
+                rank = RANK[choch_result]
                 if rank > best_rank:
                     best_rank    = rank
-                    choch_status = st
+                    choch_status = choch_result
                 if choch_status == "valid":
                     break
 
@@ -1973,14 +1995,17 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
 
 
 def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> dict:
-    """Parse detail string into card display fields."""
-    import re as _re2
-    adx    = _re2.search(r"ADX_(?:cur|peak|end)=([\d.]+)", det)
-    bb_m   = _re2.search(r"(\w+)_BB_pullback",             det)
-    sig_m  = _re2.search(r"\[(\w+) FinalSignal",           det)
-    sig_ts = _re2.search(r"sig_ts_ms=(\d+)",               det)
-    sig_px = _re2.search(r"sig_price=([\d.eE+\-]+)",       det)
-    n_sigs = _re2.search(r"\((\d+) sig",                   det)
+    """Parse detail string into card display fields.
+    ADX shown is ADX_end (current strength at window close), falling back to
+    ADX_peak if end is unavailable — matches v21 CLI _parse_det() behavior.
+    """
+    # v20 FIX: prefer ADX_end (current value) over ADX_peak (historical peak)
+    adx    = _re.search(r"ADX_end=([\d.]+)",   det) or _re.search(r"ADX_peak=([\d.]+)", det)
+    bb_m   = _re.search(r"(\w+)_BB_pullback",             det)
+    sig_m  = _re.search(r"\[(\w+) FinalSignal",           det)
+    sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
+    sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
+    n_sigs = _re.search(r"\((\d+) sig",                   det)
 
     # Price formatting
     if sig_px:
@@ -2003,17 +2028,12 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, tim
     else:
         age_h = 0.0; age_str = "—"; sig_time = "—"
 
-    # ADX value — try multiple patterns
-    adx_v = "—"
-    if adx:
-        adx_v = f"{float(adx.group(1)):.0f}"
-    else:
-        m2 = _re2.search(r"ADX_(?:peak|end|cur)=([\d.]+)", det)
-        if m2: adx_v = f"{float(m2.group(1)):.0f}"
+    # ADX value — v20 FIX: simplified redundant return expression
+    adx_v = f"{float(adx.group(1)):.0f}" if adx else "—"
 
     return {
         "price":  price_str,
-        "adx":    adx_v if adx_v != "—" else "—",
+        "adx":    adx_v,
         "bb_tf":  bb_m.group(1).upper()  if bb_m  else "—",
         "sig_tf": sig_m.group(1).upper() if sig_m else "—",
         "age_str": age_str,
@@ -2228,7 +2248,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v18</span>
+    <span class="sc-badge blue">&#128640; v20</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
