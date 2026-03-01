@@ -1,6 +1,33 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v25
+Binance Futures Scanner - ULTRA-FAST Edition v28
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v28 UPDATES over v27:
+  FIX:  Export CSV and TXT now respect the active sort order — previously both
+        files were always written A→Z regardless of the selected sort.
+        Exports are now generated dynamically at render time from the sorted
+        full-tuple lists (buy/sell valid/wait with pts and choch fields).
+        The TXT header includes a "Sort: <label>" line showing which order was used.
+        Export filenames include the sort label, e.g.:
+        signals_15m_Newest_first_1711234567.csv
+  CHORE: Version bump to v28; file renamed binance_futures_scanner_v28.py.
+
+v27 UPDATES over v26:
+  FEAT: Sort bar expanded to 4 options:
+        "🕐 Newest" — sig_ts_ms descending (most recent signal first)
+        "🕛 Oldest" — sig_ts_ms ascending  (oldest signal first)
+        "🔤 A → Z"  — symbol name ascending
+        "🔡 Z → A"  — symbol name descending
+        Sort persists in session_state across tab switches.
+  CHORE: Version bump to v27; file renamed binance_futures_scanner_v27.py.
+
+v26 UPDATES over v25:
+  FEAT: Results sort control — two toggle buttons above signal tabs:
+        "🕐 Newest first" sorts all four groups by sig_ts_ms descending.
+        "🔤 Name A→Z"    sorts all four groups alphabetically by symbol.
+        Sort choice persists in session_state across tab switches.
+        Applies to All tab, BUY/SELL Confirmed, and BUY/SELL Waiting.
+  CHORE: Version bump to v26; file renamed binance_futures_scanner_v26.py.
 
 v25 UPDATES over v24:
   FEAT: Multi-proxy fallback — up to 4 proxy slots (PROXY_URL … PROXY_URL_4) in
@@ -305,7 +332,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v25",
+    page_title="Binance Futures Scanner v28",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1108,104 +1135,88 @@ st.markdown("""
     background: linear-gradient(90deg, var(--border2), transparent);
   }
 
-  /* ── Mode selector cards ─────────────────────────────────────────── */
-  .sc-mode-row {
+  /* ── Mode selector — Streamlit buttons styled as cards ──────────── */
+  /* Wrapper div to scope these button overrides */
+  .sc-mode-selector {
     display: flex;
     gap: 10px;
     margin-bottom: 0.65rem;
+    align-items: stretch;
   }
-  .sc-mode-card {
+  .sc-mode-selector > div[data-testid="stColumn"] {
     flex: 1;
-    padding: 0.9rem 1rem 0.8rem;
-    border-radius: var(--radius);
-    border: 1.5px solid var(--border2);
-    background: var(--surface);
-    cursor: default;
-    text-align: left;
-    position: relative;
-    overflow: hidden;
-    transition: all 0.2s;
+    min-width: 0;
   }
-  .sc-mode-card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    transition: opacity 0.2s;
-    background: radial-gradient(ellipse at 20% 50%, rgba(0,180,216,0.08) 0%, transparent 70%);
+  /* The actual button — card look */
+  .sc-mode-selector div[data-testid="stButton"] > button {
+    width: 100% !important;
+    height: 90px !important;
+    padding: 0.75rem 1rem !important;
+    border-radius: var(--radius) !important;
+    border: 1.5px solid var(--border2) !important;
+    background: var(--surface) !important;
+    color: var(--text2) !important;
+    font-family: var(--body) !important;
+    font-size: 0.88rem !important;
+    font-weight: 500 !important;
+    text-align: left !important;
+    white-space: pre-wrap !important;
+    line-height: 1.55 !important;
+    cursor: pointer !important;
+    position: relative !important;
+    overflow: hidden !important;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease,
+                background 0.18s ease, transform 0.12s ease !important;
+    -webkit-tap-highlight-color: transparent !important;
   }
-  .sc-mode-card.mc-active {
-    border-color: rgba(0,180,216,0.55);
-    background: linear-gradient(135deg, rgba(0,180,216,0.07) 0%, var(--surface) 60%);
-    box-shadow: 0 0 0 1px rgba(0,180,216,0.15), 0 4px 24px rgba(0,180,216,0.1);
-  }
-  .sc-mode-card.mc-active::before { opacity: 1; }
-  .sc-mode-card.mc-active::after {
+  /* Top accent bar — visible on hover/active always */
+  .sc-mode-selector div[data-testid="stButton"] > button::before {
     content: '';
     position: absolute;
     top: 0; left: 0; right: 0;
     height: 2px;
-    background: linear-gradient(90deg, var(--blue), rgba(0,230,118,0.6));
+    background: linear-gradient(90deg, var(--blue), rgba(0,230,118,0.5));
     border-radius: 12px 12px 0 0;
-  }
-  .mc-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 5px;
-  }
-  .mc-tf-badge {
-    font-family: var(--mono);
-    font-size: 1.4rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    line-height: 1;
-    color: var(--muted);
-  }
-  .sc-mode-card.mc-active .mc-tf-badge { color: var(--blue); }
-  .mc-check {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 1.5px solid var(--border2);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: all 0.15s;
-  }
-  .sc-mode-card.mc-active .mc-check {
-    background: var(--blue);
-    border-color: var(--blue);
-    box-shadow: 0 0 8px rgba(0,180,216,0.4);
-  }
-  .mc-check-inner {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #fff;
     opacity: 0;
-    transform: scale(0);
-    transition: all 0.15s;
+    transition: opacity 0.18s;
   }
-  .sc-mode-card.mc-active .mc-check-inner { opacity: 1; transform: scale(1); }
-  .mc-chain {
-    font-family: var(--mono);
-    font-size: 0.65rem;
-    color: var(--muted);
-    letter-spacing: 0.04em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Hover state — clear lift + glow, works on touch (active) too */
+  .sc-mode-selector div[data-testid="stButton"] > button:hover,
+  .sc-mode-selector div[data-testid="stButton"] > button:focus,
+  .sc-mode-selector div[data-testid="stButton"] > button:active {
+    border-color: rgba(0,180,216,0.6) !important;
+    background: linear-gradient(135deg,
+      rgba(0,180,216,0.1) 0%, var(--surface) 65%) !important;
+    box-shadow: 0 0 0 1px rgba(0,180,216,0.2),
+                0 6px 28px rgba(0,180,216,0.18),
+                0 2px 8px rgba(0,0,0,0.4) !important;
+    transform: translateY(-2px) scale(1.015) !important;
+    color: var(--text) !important;
   }
-  .sc-mode-card.mc-active .mc-chain { color: var(--text2); }
-  .mc-desc {
-    font-size: 0.67rem;
-    color: var(--muted);
-    margin-top: 4px;
-    line-height: 1.3;
+  .sc-mode-selector div[data-testid="stButton"] > button:hover::before,
+  .sc-mode-selector div[data-testid="stButton"] > button:focus::before,
+  .sc-mode-selector div[data-testid="stButton"] > button:active::before {
+    opacity: 1;
   }
-  .sc-mode-card.mc-active .mc-desc { color: #6a8aa0; }
+  /* ACTIVE / selected card — primary type */
+  .sc-mode-selector div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
+    border-color: rgba(0,180,216,0.6) !important;
+    background: linear-gradient(135deg,
+      rgba(0,180,216,0.1) 0%, var(--surface) 65%) !important;
+    box-shadow: 0 0 0 1px rgba(0,180,216,0.2),
+                0 4px 24px rgba(0,180,216,0.14) !important;
+    color: var(--text) !important;
+  }
+  .sc-mode-selector div[data-testid="stButton"] > button[data-testid="baseButton-primary"]::before {
+    opacity: 1;
+  }
+  /* Touch press flash */
+  .sc-mode-selector div[data-testid="stButton"] > button:active {
+    transform: translateY(0px) scale(0.99) !important;
+    box-shadow: 0 0 0 1px rgba(0,180,216,0.3),
+                0 2px 12px rgba(0,180,216,0.2) !important;
+    transition: transform 0.06s ease, box-shadow 0.06s ease !important;
+  }
 
   /* ── TF pipeline flow ────────────────────────────────────────────── */
   .sc-tf-flow {
@@ -1353,6 +1364,47 @@ st.markdown("""
   @keyframes settings-slide {
     from { opacity: 0; transform: translateY(-6px); }
     to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Sort control bar ────────────────────────────────────────────── */
+  .sc-sort-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 0.7rem;
+    flex-wrap: wrap;
+  }
+  .sc-sort-label {
+    font-size: 0.62rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .sc-sort-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border2);
+    background: var(--surface2);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text2);
+    font-family: var(--mono);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .sc-sort-btn:hover  { border-color: var(--blue); color: var(--blue); }
+  .sc-sort-btn.active {
+    background: rgba(0,180,216,0.1);
+    border-color: rgba(0,180,216,0.5);
+    color: var(--blue);
+    box-shadow: 0 0 8px rgba(0,180,216,0.15);
   }
 </style>
 """, unsafe_allow_html=True)
@@ -2533,6 +2585,28 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, tim
     }
 
 
+def _sort_signals(lst: list, sort_key: str) -> list:
+    """
+    Sort a list of (sym, det) tuples.
+    sort_key: "newest"  — newest signal first  (sig_ts_ms descending)
+              "oldest"  — oldest signal first   (sig_ts_ms ascending)
+              "name_az" — symbol name A → Z
+              "name_za" — symbol name Z → A
+    """
+    def _sig_ts(item):
+        m = _re.search(r"sig_ts_ms=(\d+)", item[1])
+        return int(m.group(1)) if m else 0
+
+    if sort_key == "oldest":
+        return sorted(lst, key=_sig_ts, reverse=False)
+    if sort_key == "name_az":
+        return sorted(lst, key=lambda x: x[0])
+    if sort_key == "name_za":
+        return sorted(lst, key=lambda x: x[0], reverse=True)
+    # Default: newest first
+    return sorted(lst, key=_sig_ts, reverse=True)
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  STREAMLIT APP LAYOUT
 # ══════════════════════════════════════════════════════════════════════
@@ -2561,6 +2635,14 @@ def _init_session():
         "csv_fname":    "",
         "txt_fname":    "",
         "results_tab":  "all",
+        "results_sort": "newest",
+        "scan_ts_int":  0,
+        "scan_now_ms":  0,
+        "scan_timestamp": "",
+        "buy_valid_full":  [],
+        "buy_wait_full":   [],
+        "sell_valid_full": [],
+        "sell_wait_full":  [],
         "tz_key":       _tz_default,
         "time_fmt":     _tf_default,
     }
@@ -2743,7 +2825,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v25</span>
+    <span class="sc-badge blue">&#128640; v28</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
@@ -2883,55 +2965,29 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             "<div class='sc-section-label'>&#9881;&nbsp; Scan Configuration</div>",
             unsafe_allow_html=True)
 
-        # Mode selector cards (visual display)
-        def _active(k): return "mc-active" if mode_key == k else ""
-        def _check(k):
-            a = "sc-mode-card.mc-active " if mode_key == k else ""
-            return (f'<div class="mc-check"><div class="mc-check-inner"></div></div>')
-
-        st.markdown(
-            f"<div class='sc-mode-row'>"
-            # 15M card
-            f"<div class='sc-mode-card {_active('15m')}'>"
-            f"  <div class='mc-header'>"
-            f"    <span class='mc-tf-badge'>15M</span>"
-            f"    {_check('15m')}"
-            f"  </div>"
-            f"  <div class='mc-chain'>Daily &#8594; 4H &#8594; 1H &#8594; 15M</div>"
-            f"  <div class='mc-desc'>Swing / intraday  &middot;  650-bar ChoCh depth</div>"
-            f"</div>"
-            # 5M card
-            f"<div class='sc-mode-card {_active('5m')}'>"
-            f"  <div class='mc-header'>"
-            f"    <span class='mc-tf-badge'>5M</span>"
-            f"    {_check('5m')}"
-            f"  </div>"
-            f"  <div class='mc-chain'>4H &#8594; 1H &#8594; 15M &#8594; 5M</div>"
-            f"  <div class='mc-desc'>Scalp / short-term  &middot;  550-bar ChoCh depth</div>"
-            f"</div>"
-            f"</div>",
-            unsafe_allow_html=True)
-
-        # Actual hidden mode toggle buttons
+        # Mode selector — Streamlit buttons ARE the cards (clickable/tappable)
+        check_on  = "✔"   # shown on active card label
+        lbl_15m   = (
+            f"{'✔ ' if mode_key == '15m' else '  '}15M  —  Swing / Intraday\n"
+            f"Daily → 4H → 1H → 15M  ·  650-bar ChoCh"
+        )
+        lbl_5m    = (
+            f"{'✔ ' if mode_key == '5m' else '  '}5M  —  Scalp / Short-term\n"
+            f"4H → 1H → 15M → 5M  ·  550-bar ChoCh"
+        )
+        st.markdown("<div class='sc-mode-selector'>", unsafe_allow_html=True)
         _mc1, _mc2 = st.columns(2)
         with _mc1:
-            if st.button(
-                "✓ 15M selected" if mode_key == "15m" else "Switch to 15M",
-                key="mode_btn_15m",
-                use_container_width=True,
-                type="primary" if mode_key == "15m" else "secondary",
-            ):
+            if st.button(lbl_15m, key="mode_btn_15m", use_container_width=True,
+                         type="primary" if mode_key == "15m" else "secondary"):
                 st.session_state["scan_mode_sel"] = "15m"
                 st.rerun()
         with _mc2:
-            if st.button(
-                "✓ 5M selected" if mode_key == "5m" else "Switch to 5M",
-                key="mode_btn_5m",
-                use_container_width=True,
-                type="primary" if mode_key == "5m" else "secondary",
-            ):
+            if st.button(lbl_5m, key="mode_btn_5m", use_container_width=True,
+                         type="primary" if mode_key == "5m" else "secondary"):
                 st.session_state["scan_mode_sel"] = "5m"
                 st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
         # TF pipeline flow diagram
         st.markdown(
@@ -3098,15 +3154,19 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "scan_state":   state,
                         "scan_elapsed": elapsed,
                         "scan_mode":    mode_key,
+                        "scan_ts_int":  ts_int,
+                        "scan_now_ms":  now_ms,
+                        "scan_timestamp": timestamp,
                         "df_final":     df_final,
+                        # Store full (sym, det, pts, choch) for sort-aware re-export
                         "buy_valid":    [(s, d) for s, d, _, _ in buy_valid],
                         "buy_wait":     [(s, d) for s, d, _, _ in buy_wait],
                         "sell_valid":   [(s, d) for s, d, _, _ in sell_valid],
                         "sell_wait":    [(s, d) for s, d, _, _ in sell_wait],
-                        "csv_bytes":    csv_bytes,
-                        "txt_bytes":    txt_bytes,
-                        "csv_fname":    f"signals_{mode_key}_{ts_int}.csv",
-                        "txt_fname":    f"signals_{mode_key}_{ts_int}.txt",
+                        "buy_valid_full":  [(s, d, p, c) for s, d, p, c in buy_valid],
+                        "buy_wait_full":   [(s, d, p, c) for s, d, p, c in buy_wait],
+                        "sell_valid_full": [(s, d, p, c) for s, d, p, c in sell_valid],
+                        "sell_wait_full":  [(s, d, p, c) for s, d, p, c in sell_wait],
                     })
                 else:
                     st.session_state.update({
@@ -3133,11 +3193,11 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             r_tz_h     = TIMEZONES.get(r_tz_key, 0.0)
             r_time_fmt = st.session_state.get("time_fmt", TIME_FMT_DEFAULT)
 
-            bv_list = st.session_state["buy_valid"]
-            bw_list = st.session_state["buy_wait"]
-            sv_list = st.session_state["sell_valid"]
-            sw_list = st.session_state["sell_wait"]
-            bv, bw, sv, sw = len(bv_list), len(bw_list), len(sv_list), len(sw_list)
+            bv_list_raw = st.session_state["buy_valid"]
+            bw_list_raw = st.session_state["buy_wait"]
+            sv_list_raw = st.session_state["sell_valid"]
+            sw_list_raw = st.session_state["sell_wait"]
+            bv, bw, sv, sw = len(bv_list_raw), len(bw_list_raw), len(sv_list_raw), len(sw_list_raw)
             all_sigs = bv + bw + sv + sw
 
             # Persistent summary banner
@@ -3151,6 +3211,51 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     '<p>No signals &mdash; market conditions did not meet all 4 stage filters.</p></div>',
                     unsafe_allow_html=True)
             else:
+                # ── Sort control bar ──────────────────────────────────
+                cur_sort = st.session_state.get("results_sort", "newest")
+                _sl, srt_c1, srt_c2, srt_c3, srt_c4 = st.columns([1.2, 1, 1, 1, 1])
+                with _sl:
+                    st.markdown(
+                        "<div style='font-size:0.62rem;font-weight:800;text-transform:uppercase;"
+                        "letter-spacing:0.14em;color:#5a5a72;padding-top:0.55rem;"
+                        "white-space:nowrap'>&#9650; Sort by</div>",
+                        unsafe_allow_html=True)
+                with srt_c1:
+                    if st.button("🕐 Newest", key="sort_newest",
+                                 use_container_width=True,
+                                 type="primary" if cur_sort == "newest" else "secondary",
+                                 help="Newest signal timestamp first"):
+                        st.session_state["results_sort"] = "newest"
+                        st.rerun()
+                with srt_c2:
+                    if st.button("🕛 Oldest", key="sort_oldest",
+                                 use_container_width=True,
+                                 type="primary" if cur_sort == "oldest" else "secondary",
+                                 help="Oldest signal timestamp first"):
+                        st.session_state["results_sort"] = "oldest"
+                        st.rerun()
+                with srt_c3:
+                    if st.button("🔤 A → Z", key="sort_az",
+                                 use_container_width=True,
+                                 type="primary" if cur_sort == "name_az" else "secondary",
+                                 help="Symbol name A to Z"):
+                        st.session_state["results_sort"] = "name_az"
+                        st.rerun()
+                with srt_c4:
+                    if st.button("🔡 Z → A", key="sort_za",
+                                 use_container_width=True,
+                                 type="primary" if cur_sort == "name_za" else "secondary",
+                                 help="Symbol name Z to A"):
+                        st.session_state["results_sort"] = "name_za"
+                        st.rerun()
+
+                # Apply sort to all four lists
+                cur_sort = st.session_state.get("results_sort", "newest")
+                bv_list = _sort_signals(bv_list_raw, cur_sort)
+                bw_list = _sort_signals(bw_list_raw, cur_sort)
+                sv_list = _sort_signals(sv_list_raw, cur_sort)
+                sw_list = _sort_signals(sw_list_raw, cur_sort)
+
                 # Signal card tabs — sticky (backed by session_state)
                 tab_labels = [
                     f"All ({all_sigs})",
@@ -3179,39 +3284,126 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 with t_sw:
                     st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
 
-                # Full table + export in collapsible
-                if df_final is not None and not df_final.empty:
-                    with st.expander("&#128203; Full Data Table + Export", expanded=False):
-                        display_cols = [
-                            "Direction", "Symbol", "ChoCh", "Signal_Price",
-                            "ADX_Peak", "ADX_End", "BB_TF", "Signal_TF",
-                            "Signal_Time", "Pivot_Age_h",
-                        ]
-                        col_cfg = {
-                            "Direction":    st.column_config.TextColumn("Dir",       width=85),
-                            "Symbol":       st.column_config.TextColumn("Symbol",    width=150),
-                            "ChoCh":        st.column_config.TextColumn("BOS/ChoCh", width=100),
-                            "Signal_Price": st.column_config.TextColumn("Price",     width=100),
-                            "ADX_Peak":     st.column_config.NumberColumn("ADX Pk",  format="%.1f", width=75),
-                            "ADX_End":      st.column_config.NumberColumn("ADX End", format="%.1f", width=75),
-                            "BB_TF":        st.column_config.TextColumn("BB TF",     width=58),
-                            "Signal_TF":    st.column_config.TextColumn("Sig TF",    width=62),
-                            "Signal_Time":  st.column_config.TextColumn("Signal Time", width=160),
-                            "Pivot_Age_h":  st.column_config.NumberColumn("Age h",   format="%.1f", width=62),
-                        }
-                        st.dataframe(
-                            df_final[display_cols], use_container_width=True, hide_index=True,
-                            height=min(540, 50 + 36 * len(df_final)), column_config=col_cfg)
+                # Full table + export — rebuilt dynamically with current sort ──
+                _bv_full = st.session_state.get("buy_valid_full",  [])
+                _bw_full = st.session_state.get("buy_wait_full",   [])
+                _sv_full = st.session_state.get("sell_valid_full", [])
+                _sw_full = st.session_state.get("sell_wait_full",  [])
 
-                        ec1, ec2, _sp2 = st.columns([1, 1, 2])
-                        ec1.download_button(
-                            "&#128196; Export CSV", data=st.session_state["csv_bytes"],
-                            file_name=st.session_state["csv_fname"],
-                            mime="text/csv", use_container_width=True)
-                        ec2.download_button(
-                            "&#128221; Export TXT", data=st.session_state["txt_bytes"],
-                            file_name=st.session_state["txt_fname"],
-                            mime="text/plain", use_container_width=True)
+                # Sort the full tuples the same way as the display lists
+                def _sort_full(lst, sk):
+                    """Sort (sym,det,pts,choch) tuples using same keys as _sort_signals."""
+                    import re as _re2
+                    def _ts(item):
+                        m = _re2.search(r"sig_ts_ms=(\d+)", item[1])
+                        return int(m.group(1)) if m else 0
+                    if sk == "oldest":   return sorted(lst, key=_ts)
+                    if sk == "name_az":  return sorted(lst, key=lambda x: x[0])
+                    if sk == "name_za":  return sorted(lst, key=lambda x: x[0], reverse=True)
+                    return sorted(lst, key=_ts, reverse=True)  # newest
+
+                _bv_s = _sort_full(_bv_full, cur_sort)
+                _bw_s = _sort_full(_bw_full, cur_sort)
+                _sv_s = _sort_full(_sv_full, cur_sort)
+                _sw_s = _sort_full(_sw_full, cur_sort)
+
+                _exp_now_ms    = st.session_state.get("scan_now_ms",    int(time.time()*1000))
+                _exp_timestamp = st.session_state.get("scan_timestamp", "")
+                _exp_ts_int    = st.session_state.get("scan_ts_int",    int(time.time()))
+                _sort_labels   = {"newest": "Newest first", "oldest": "Oldest first",
+                                  "name_az": "A→Z", "name_za": "Z→A"}
+                _sort_lbl      = _sort_labels.get(cur_sort, cur_sort)
+
+                # Build sorted export rows
+                _all_sorted = (
+                    [("BUY",  s, d, p, c) for s, d, p, c in _bv_s] +
+                    [("BUY",  s, d, p, c) for s, d, p, c in _bw_s]  +
+                    [("SELL", s, d, p, c) for s, d, p, c in _sv_s] +
+                    [("SELL", s, d, p, c) for s, d, p, c in _sw_s]
+                )
+                if _all_sorted:
+                    _exp_rows = [
+                        _parse_row(dir_, s, d, p, ch, _exp_now_ms, mode_key_r,
+                                   _exp_timestamp, r_tz_h, r_tz_key, r_time_fmt)
+                        for dir_, s, d, p, ch in _all_sorted
+                    ]
+                    _df_sorted = pd.DataFrame(_exp_rows)
+
+                    # CSV bytes
+                    _cbuf = io.StringIO()
+                    _df_sorted.to_csv(_cbuf, index=False)
+                    _csv_bytes = _cbuf.getvalue().encode("utf-8")
+
+                    # TXT bytes
+                    _tbuf = io.StringIO()
+                    _tbuf.write(f"BINANCE FUTURES SCANNER  —  {mode_key_r.upper()} MODE\n")
+                    _tbuf.write(f"Scan Time : {_exp_timestamp}\n")
+                    _tbuf.write(f"Timezone  : {r_tz_key}\n")
+                    _tbuf.write(f"Time Fmt  : {r_time_fmt.upper()}\n")
+                    _tbuf.write(f"Sort      : {_sort_lbl}\n")
+                    _tbuf.write(f"Symbols   : {total}  |  Elapsed : {elapsed:.1f}s\n")
+                    _tbuf.write(f"BUY  : {bv} VALID  {bw} WAIT\n")
+                    _tbuf.write(f"SELL : {sv} VALID  {sw} WAIT\n")
+                    _tbuf.write("=" * 72 + "\n")
+                    for _dir, _glbl, _grp in [
+                        ("BUY",  "BUY CONFIRMED",  _bv_s),
+                        ("BUY",  "BUY WAITING",    _bw_s),
+                        ("SELL", "SELL CONFIRMED", _sv_s),
+                        ("SELL", "SELL WAITING",   _sw_s),
+                    ]:
+                        if not _grp: continue
+                        _tbuf.write(f"\n{'─'*28} {_glbl} {'─'*28}\n")
+                        for _sym, _det, _pts, _cst in _grp:
+                            _r = _parse_row(_dir, _sym, _det, _pts, _cst,
+                                            _exp_now_ms, mode_key_r, _exp_timestamp,
+                                            r_tz_h, r_tz_key, r_time_fmt)
+                            _tbuf.write(
+                                f"  {_r['Symbol']:<24}  Price={_r['Signal_Price']}\n"
+                                f"  {'':24}  ADX peak={_r['ADX_Peak']}  end={_r['ADX_End']}  Age={_r['Pivot_Age_h']}h\n"
+                                f"  {'':24}  BB={_r['BB_TF']}  Signal={_r['Signal_TF']}\n"
+                                f"  {'':24}  Pine Signal Time: {_r['Signal_Time']}\n"
+                                f"  {'':24}  BOS/ChoCh: {_r['ChoCh']}\n\n"
+                            )
+                    _txt_bytes = _tbuf.getvalue().encode("utf-8")
+
+                    if df_final is not None and not df_final.empty:
+                        with st.expander("&#128203; Full Data Table + Export", expanded=False):
+                            display_cols = [
+                                "Direction", "Symbol", "ChoCh", "Signal_Price",
+                                "ADX_Peak", "ADX_End", "BB_TF", "Signal_TF",
+                                "Signal_Time", "Pivot_Age_h",
+                            ]
+                            col_cfg = {
+                                "Direction":    st.column_config.TextColumn("Dir",       width=85),
+                                "Symbol":       st.column_config.TextColumn("Symbol",    width=150),
+                                "ChoCh":        st.column_config.TextColumn("BOS/ChoCh", width=100),
+                                "Signal_Price": st.column_config.TextColumn("Price",     width=100),
+                                "ADX_Peak":     st.column_config.NumberColumn("ADX Pk",  format="%.1f", width=75),
+                                "ADX_End":      st.column_config.NumberColumn("ADX End", format="%.1f", width=75),
+                                "BB_TF":        st.column_config.TextColumn("BB TF",     width=58),
+                                "Signal_TF":    st.column_config.TextColumn("Sig TF",    width=62),
+                                "Signal_Time":  st.column_config.TextColumn("Signal Time", width=160),
+                                "Pivot_Age_h":  st.column_config.NumberColumn("Age h",   format="%.1f", width=62),
+                            }
+                            # Show sorted df in table
+                            st.dataframe(
+                                _df_sorted[display_cols], use_container_width=True,
+                                hide_index=True,
+                                height=min(540, 50 + 36 * len(_df_sorted)),
+                                column_config=col_cfg)
+                            st.caption(f"Sort: {_sort_lbl} — export matches this order")
+
+                            ec1, ec2, _sp2 = st.columns([1, 1, 2])
+                            ec1.download_button(
+                                "&#128196; Export CSV",
+                                data=_csv_bytes,
+                                file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.csv",
+                                mime="text/csv", use_container_width=True)
+                            ec2.download_button(
+                                "&#128221; Export TXT",
+                                data=_txt_bytes,
+                                file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.txt",
+                                mime="text/plain", use_container_width=True)
 
     # ══ TAB 2: DEBUG SYMBOL ═══════════════════════════════════════════
     with tab_debug:
