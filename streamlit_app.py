@@ -1,6 +1,20 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v28
+Binance Futures Scanner - ULTRA-FAST Edition v29
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v29 UPDATES over v28:
+  UI:  Comprehensive mobile-responsive overhaul:
+       Tablet (≤900px): TF flow scrolls horizontally, card grid adapts.
+       Mobile (≤640px): All Streamlit columns stack vertically; header
+         compresses; tabs scroll horizontally; signal cards show 2-per-row;
+         sort bar becomes 2×2 grid; touch targets ≥44px throughout;
+         counters go 3-column; TF nodes shrink + scroll; pills scale down;
+         proxy banner, settings panel, and debug info all reflow correctly.
+       Very small (≤380px): header badges hidden, TF node labels hidden,
+         header simplified to save vertical space.
+  UI:  Sort bar restructured to 2 rows × 2 columns — cleaner on all sizes.
+  UI:  Action button row simplified (4:1 ratio, Markets shows icon only).
+  CHORE: Version bump to v29; file renamed binance_futures_scanner_v29.py.
 
 v28 UPDATES over v27:
   FIX:  Export CSV and TXT now respect the active sort order — previously both
@@ -332,7 +346,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v28",
+    page_title="Binance Futures Scanner v29",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1107,13 +1121,200 @@ st.markdown("""
   .dot-3 { background: rgba(160,80,255,0.2); color: #b060ff; }
   .dot-4 { background: rgba(0,230,118,0.2); color: var(--green); }
 
-  /* ── Mobile ─────────────────────────────────────────────────────── */
-  @media (max-width: 600px) {
-    .main .block-container { padding: 0.5rem 0.5rem 3rem !important; }
-    .sc-header h1 { font-size: 1.35rem; }
-    .sc-card-price { font-size: 1.1rem; }
-    .sc-cnt .cnt-val { font-size: 1.4rem; }
-    .sc-summary { padding: 0.7rem 0.8rem; }
+  /* ════════════════════════════════════════════════════════════════
+     MOBILE  —  comprehensive responsive overrides
+  ════════════════════════════════════════════════════════════════ */
+
+  /* ── Tablet (≤ 900px) ───────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .sc-tf-flow {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .sc-tf-node { min-width: 72px; }
+    .sc-grid {
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important;
+    }
+    .sc-all-layout { grid-template-columns: 1fr !important; }
+  }
+
+  /* ── Mobile (≤ 640px) ───────────────────────────────────────── */
+  @media (max-width: 640px) {
+    /* ── Base padding ─────────────────────────── */
+    .main .block-container,
+    [data-testid="stMainBlockContainer"] {
+      padding: 0.4rem 0.45rem 5rem !important;
+    }
+
+    /* ── Ensure all Streamlit columns stack ───── */
+    [data-testid="stHorizontalBlock"] {
+      flex-direction: column !important;
+      gap: 0.4rem !important;
+    }
+    [data-testid="stColumn"] {
+      width: 100% !important;
+      flex: 1 1 100% !important;
+      min-width: 0 !important;
+    }
+
+    /* ── Touch targets — 44px min ────────────── */
+    .stButton > button,
+    button[data-testid="baseButton-primary"],
+    button[data-testid="baseButton-secondary"],
+    [data-testid="stDownloadButton"] > button {
+      min-height: 44px !important;
+      font-size: 0.85rem !important;
+      padding: 0.6rem 0.7rem !important;
+    }
+
+    /* ── Header ───────────────────────────────── */
+    .sc-header {
+      padding: 0.9rem 0.9rem 0.8rem !important;
+      flex-direction: column !important;
+      align-items: flex-start !important;
+      gap: 0.5rem !important;
+    }
+    .sc-header h1 {
+      font-size: 1.15rem !important;
+      line-height: 1.2 !important;
+    }
+    .sc-header .sub { font-size: 0.58rem !important; letter-spacing: 0.07em !important; }
+    .sc-header-right {
+      gap: 4px !important;
+      flex-wrap: wrap !important;
+    }
+    .sc-badge        { font-size: 0.62rem !important; padding: 3px 7px !important; }
+    .sc-tz-badge     { font-size: 0.62rem !important; padding: 3px 7px !important; }
+
+    /* ── Tabs ─────────────────────────────────── */
+    .stTabs [data-baseweb="tab-list"] {
+      overflow-x: auto !important;
+      flex-wrap: nowrap !important;
+      -webkit-overflow-scrolling: touch !important;
+      padding: 4px !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+      font-size: 0.78rem !important;
+      padding: 0.45rem 0.75rem !important;
+      white-space: nowrap !important;
+    }
+
+    /* ── Mode selector cards ──────────────────── */
+    .sc-mode-selector {
+      flex-direction: column !important;
+      gap: 6px !important;
+    }
+    .sc-mode-selector div[data-testid="stButton"] > button {
+      height: auto !important;
+      min-height: 52px !important;
+      font-size: 0.82rem !important;
+    }
+
+    /* ── TF pipeline flow ────────────────────── */
+    .sc-tf-flow {
+      overflow-x: auto !important;
+      -webkit-overflow-scrolling: touch !important;
+    }
+    .sc-tf-node {
+      min-width: 62px !important;
+      padding: 0.55rem 0.3rem 0.5rem !important;
+    }
+    .sc-tf-node .tf-val  { font-size: 0.82rem !important; }
+    .sc-tf-node .tf-stage { font-size: 0.48rem !important; }
+    .sc-tf-node .tf-role  { font-size: 0.5rem !important; }
+
+    /* ── Rule pills ───────────────────────────── */
+    .sc-pills-v2 { gap: 4px !important; }
+    .sc-pill-v2  { font-size: 0.68rem !important; padding: 4px 8px 4px 5px !important; }
+    .pill-num-v2 { width: 15px !important; height: 15px !important; font-size: 0.58rem !important; }
+
+    /* ── Sort bar ─────────────────────────────── */
+    [data-testid="stHorizontalBlock"]:has(#sort_newest),
+    [data-testid="stHorizontalBlock"]:has(#sort_oldest) {
+      display: grid !important;
+      grid-template-columns: 1fr 1fr !important;
+      flex-direction: unset !important;
+      gap: 5px !important;
+    }
+
+    /* ── Signal cards ─────────────────────────── */
+    .sc-grid {
+      grid-template-columns: repeat(2, 1fr) !important;
+      gap: 6px !important;
+    }
+    .sc-col-grid {
+      grid-template-columns: repeat(2, 1fr) !important;
+      gap: 5px !important;
+    }
+    .sc-card { padding: 0.5rem 0.55rem 0.45rem !important; }
+    .sc-card-sym   { font-size: 0.85rem !important; }
+    .sc-card-price { font-size: 0.88rem !important; }
+    .sc-card-info  { font-size: 0.6rem !important; }
+    .sc-card-dir   { font-size: 0.58rem !important; padding: 1px 5px !important; }
+
+    /* ── Summary banner ───────────────────────── */
+    .sc-summary {
+      padding: 0.55rem 0.7rem !important;
+      gap: 0.3rem 0.5rem !important;
+    }
+    .sc-summary .ss-title { font-size: 0.75rem !important; }
+    .sc-summary .ss-chip  { font-size: 0.65rem !important; padding: 2px 7px !important; }
+    .sc-summary .ss-meta  { margin-left: 0 !important; width: 100% !important; }
+
+    /* ── Live counters ────────────────────────── */
+    .sc-counters {
+      grid-template-columns: repeat(3, 1fr) !important;
+      gap: 5px !important;
+    }
+    .sc-cnt        { padding: 0.55rem 0.3rem 0.45rem !important; }
+    .sc-cnt .cnt-val { font-size: 1.4rem !important; }
+    .sc-cnt .cnt-lbl { font-size: 0.55rem !important; }
+    .sc-cnt .cnt-sub { font-size: 0.52rem !important; }
+
+    /* ── Settings panel ───────────────────────── */
+    .sc-settings-panel { padding: 0.7rem 0.7rem 0.55rem !important; }
+
+    /* ── Proxy banner ─────────────────────────── */
+    .sc-proxy-ok, .sc-proxy-err {
+      font-size: 0.75rem !important;
+      padding: 0.5rem 0.7rem !important;
+      flex-wrap: wrap !important;
+    }
+
+    /* ── Section label ────────────────────────── */
+    .sc-section-label { font-size: 0.55rem !important; margin: 0.15rem 0 0.4rem !important; }
+
+    /* ── All-section stacked headers ─────────── */
+    .sc-col-header { font-size: 0.6rem !important; padding: 4px 8px !important; }
+
+    /* ── Debug pipeline info ──────────────────── */
+    .sc-pipeline-info { font-size: 0.75rem !important; padding: 0.7rem 0.8rem !important; line-height: 1.9 !important; }
+    .sc-stage-dot     { width: 17px !important; height: 17px !important; font-size: 0.58rem !important; line-height: 17px !important; }
+
+    /* ── Expander ─────────────────────────────── */
+    [data-testid="stExpander"] summary {
+      font-size: 0.82rem !important;
+      padding: 0.5rem 0.7rem !important;
+    }
+
+    /* ── Action buttons ───────────────────────── */
+    .stButton > button[data-testid="baseButton-primary"] {
+      font-size: 0.95rem !important;
+      letter-spacing: 0.01em !important;
+    }
+  }
+
+  /* ── Very small phones (≤ 380px) ────────────────────────────── */
+  @media (max-width: 380px) {
+    .sc-header h1 { font-size: 1rem !important; }
+    .sc-header-right { display: none !important; }
+    .sc-grid  { grid-template-columns: 1fr 1fr !important; }
+    .sc-badge { display: none !important; }
+    .sc-tz-badge { font-size: 0.58rem !important; }
+    .sc-tf-node .tf-stage,
+    .sc-tf-node .tf-role  { display: none !important; }
+    .sc-tf-node .tf-val   { font-size: 0.78rem !important; }
   }
 
   /* ── Scan config section label ───────────────────────────────────── */
@@ -2825,7 +3026,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v28</span>
+    <span class="sc-badge blue">&#128640; v29</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
@@ -3036,13 +3237,13 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
         )
 
         # ── Action buttons ────────────────────────────────────────────
-        btn_c1, btn_c2, _sp = st.columns([3, 1, 4])
+        btn_c1, btn_c2 = st.columns([4, 1])
         with btn_c1:
             scan_clicked = st.button("&#128640;  Start Scan", type="primary", key="scan_btn",
                                      use_container_width=True)
         with btn_c2:
-            if st.button("&#128260; Markets", key="clear_mkts", use_container_width=True,
-                         help="Clear cached market list — forces fresh reload from Binance"):
+            if st.button("&#128260;", key="clear_mkts", use_container_width=True,
+                         help="Refresh market list — clears cache and reloads from Binance"):
                 st.session_state.pop("markets", None)
                 st.rerun()
 
@@ -3213,41 +3414,44 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             else:
                 # ── Sort control bar ──────────────────────────────────
                 cur_sort = st.session_state.get("results_sort", "newest")
-                _sl, srt_c1, srt_c2, srt_c3, srt_c4 = st.columns([1.2, 1, 1, 1, 1])
-                with _sl:
-                    st.markdown(
-                        "<div style='font-size:0.62rem;font-weight:800;text-transform:uppercase;"
-                        "letter-spacing:0.14em;color:#5a5a72;padding-top:0.55rem;"
-                        "white-space:nowrap'>&#9650; Sort by</div>",
-                        unsafe_allow_html=True)
-                with srt_c1:
-                    if st.button("🕐 Newest", key="sort_newest",
+                st.markdown(
+                    "<div style='font-size:0.62rem;font-weight:800;text-transform:uppercase;"
+                    "letter-spacing:0.14em;color:#5a5a72;margin-bottom:0.3rem'>"
+                    "&#9650; Sort results</div>",
+                    unsafe_allow_html=True)
+                # Row 1: time sorts
+                srt_r1c1, srt_r1c2 = st.columns(2)
+                with srt_r1c1:
+                    if st.button("🕐 Newest first", key="sort_newest",
                                  use_container_width=True,
                                  type="primary" if cur_sort == "newest" else "secondary",
                                  help="Newest signal timestamp first"):
                         st.session_state["results_sort"] = "newest"
                         st.rerun()
-                with srt_c2:
-                    if st.button("🕛 Oldest", key="sort_oldest",
+                with srt_r1c2:
+                    if st.button("🕛 Oldest first", key="sort_oldest",
                                  use_container_width=True,
                                  type="primary" if cur_sort == "oldest" else "secondary",
                                  help="Oldest signal timestamp first"):
                         st.session_state["results_sort"] = "oldest"
                         st.rerun()
-                with srt_c3:
-                    if st.button("🔤 A → Z", key="sort_az",
+                # Row 2: name sorts
+                srt_r2c1, srt_r2c2 = st.columns(2)
+                with srt_r2c1:
+                    if st.button("🔤 Name A → Z", key="sort_az",
                                  use_container_width=True,
                                  type="primary" if cur_sort == "name_az" else "secondary",
                                  help="Symbol name A to Z"):
                         st.session_state["results_sort"] = "name_az"
                         st.rerun()
-                with srt_c4:
-                    if st.button("🔡 Z → A", key="sort_za",
+                with srt_r2c2:
+                    if st.button("🔡 Name Z → A", key="sort_za",
                                  use_container_width=True,
                                  type="primary" if cur_sort == "name_za" else "secondary",
                                  help="Symbol name Z to A"):
                         st.session_state["results_sort"] = "name_za"
                         st.rerun()
+                st.markdown("<div style='margin-bottom:0.4rem'></div>", unsafe_allow_html=True)
 
                 # Apply sort to all four lists
                 cur_sort = st.session_state.get("results_sort", "newest")
