@@ -1,8 +1,8 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v30
+Binance Futures Scanner - ULTRA-FAST Edition v31
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v30 UPDATES over v29:
+v31 UPDATES over v30:
   UI:  Full mobile-first CSS rewrite with safe-area insets (iPhone notch/home bar).
        Bottom nav bar added — sticky scan/debug tabs pinned at bottom on mobile.
        Touch targets enforced at ≥48px everywhere (raised from 44px).
@@ -23,7 +23,7 @@ v30 UPDATES over v29:
        Safe-area padding applied to bottom of main container (notch phones).
   UI:  Header compresses to single-line title on ≤390px; subtitle hidden.
   UI:  All st.columns([...]) in main() wrapped with mobile-override CSS.
-  CHORE: Version bump to v30; file renamed binance_futures_scanner_v30.py.
+  CHORE: Version bump to v31; file renamed binance_futures_scanner_v31.py.
 
 v28 UPDATES over v27:
   FIX:  Export CSV and TXT now respect the active sort order — previously both
@@ -355,15 +355,13 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v30",
+    page_title="Binance Futures Scanner v31",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
-<!-- v30: Viewport meta — prevent iOS zoom on input focus -->
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
 
@@ -1355,10 +1353,9 @@ st.markdown("""
       overflow-x: auto !important;
     }
 
-    /* ── Text / select inputs ─────────────────── */
-    .stTextInput input,
-    .stSelectbox select {
-      font-size: 16px !important; /* prevents iOS zoom on focus */
+    /* ── Text inputs — 16px prevents iOS auto-zoom on focus ────── */
+    .stTextInput input {
+      font-size: 16px !important;
       min-height: 44px !important;
     }
   }
@@ -1460,11 +1457,11 @@ st.markdown("""
   }
 
   /* ── 15M card — cyan theme ── */
-  .sc-mode-selector > [data-testid="stColumn"]:first-child button::before {
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(1) button::before {
     background: linear-gradient(90deg, #00d4ff, #00ffb3);
   }
-  .sc-mode-selector > [data-testid="stColumn"]:first-child button:hover,
-  .sc-mode-selector > [data-testid="stColumn"]:first-child button:focus {
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(1) button:hover,
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(1) button:focus {
     border-color: var(--c15g) !important;
     background: linear-gradient(135deg, var(--c15b) 0%, var(--surface) 70%) !important;
     box-shadow: 0 0 0 1px rgba(0,212,255,0.2),
@@ -1473,24 +1470,24 @@ st.markdown("""
     transform: translateY(-2px) scale(1.015) !important;
     color: var(--c15) !important;
   }
-  .sc-mode-selector > [data-testid="stColumn"]:first-child button:hover::before,
-  .sc-mode-selector > [data-testid="stColumn"]:first-child button:focus::before { opacity: 1; }
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(1) button:hover::before,
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(1) button:focus::before { opacity: 1; }
   /* 15M active */
-  .sc-mode-selector > [data-testid="stColumn"]:first-child button[data-testid="baseButton-primary"] {
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(1) button[data-testid="baseButton-primary"] {
     border-color: rgba(0,212,255,0.5) !important;
     background: linear-gradient(135deg, var(--c15b) 0%, var(--surface) 70%) !important;
     box-shadow: 0 0 0 1px rgba(0,212,255,0.15),
                 0 4px 22px rgba(0,212,255,0.18) !important;
     color: var(--c15) !important;
   }
-  .sc-mode-selector > [data-testid="stColumn"]:first-child button[data-testid="baseButton-primary"]::before { opacity: 1; }
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(1) button[data-testid="baseButton-primary"]::before { opacity: 1; }
 
   /* ── 5M card — orange theme ── */
-  .sc-mode-selector > [data-testid="stColumn"]:last-child button::before {
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(2) button::before {
     background: linear-gradient(90deg, #ff6b35, #ffca28);
   }
-  .sc-mode-selector > [data-testid="stColumn"]:last-child button:hover,
-  .sc-mode-selector > [data-testid="stColumn"]:last-child button:focus {
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(2) button:hover,
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(2) button:focus {
     border-color: var(--c5g) !important;
     background: linear-gradient(135deg, var(--c5b) 0%, var(--surface) 70%) !important;
     box-shadow: 0 0 0 1px rgba(255,107,53,0.2),
@@ -1499,17 +1496,17 @@ st.markdown("""
     transform: translateY(-2px) scale(1.015) !important;
     color: var(--c5) !important;
   }
-  .sc-mode-selector > [data-testid="stColumn"]:last-child button:hover::before,
-  .sc-mode-selector > [data-testid="stColumn"]:last-child button:focus::before { opacity: 1; }
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(2) button:hover::before,
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(2) button:focus::before { opacity: 1; }
   /* 5M active */
-  .sc-mode-selector > [data-testid="stColumn"]:last-child button[data-testid="baseButton-primary"] {
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(2) button[data-testid="baseButton-primary"] {
     border-color: rgba(255,107,53,0.5) !important;
     background: linear-gradient(135deg, var(--c5b) 0%, var(--surface) 70%) !important;
     box-shadow: 0 0 0 1px rgba(255,107,53,0.15),
                 0 4px 22px rgba(255,107,53,0.2) !important;
     color: var(--c5) !important;
   }
-  .sc-mode-selector > [data-testid="stColumn"]:last-child button[data-testid="baseButton-primary"]::before { opacity: 1; }
+  .sc-mode-selector [data-testid="stColumn"]:nth-child(2) button[data-testid="baseButton-primary"]::before { opacity: 1; }
 
   /* Touch press flash — shared */
   .sc-mode-selector div[data-testid="stButton"] > button:active {
@@ -3124,7 +3121,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v30</span>
+    <span class="sc-badge blue">&#128640; v31</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
