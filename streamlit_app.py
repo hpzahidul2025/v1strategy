@@ -1,6 +1,42 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v20
+Binance Futures Scanner - ULTRA-FAST Edition v22
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v22 UPDATES over v21:
+  FIX:  debug_single S4 detail_msg — n_sigs was stale (pre-KC-filter count);
+        now uses len(sig_ts_list) (post-filter) matching actual signals checked.
+  FIX:  _parse_det_card docstring — "ADX_end" → "ADX_cur" (stale label).
+  FIX:  _parse_det_card comment — "prefer ADX_end" → "prefer ADX_cur".
+
+v21 UPDATES over v20 (aligned with CLI v23–v26):
+  FEAT: check_bb_kc_range() — Stage 3 mid-TF KC range validity gate (v23/v24).
+        The 1st BB signal in the pivot window opens a clean window (valid_from_ts).
+        Consecutive BB signals in an unviolated window do NOT open a new window.
+        A close outside the mid-TF KC band closes the current window.
+        The 1st BB signal after a violation opens a fresh window.
+        sig_tf signals are filtered: only those >= valid_from_ts survive.
+        Signals from closed (violated) windows are silently discarded.
+  FEAT: stage3_worker — BB+KC gate replaces plain BB check.
+        choch_tf fetch is now DYNAMIC (v26): bars_needed computed from the
+        oldest surviving signal timestamp rather than a fixed ceiling.
+        Formula: ceil((now - oldest_sig) / tf_ms) + 30 warmup bars.
+        Floor: BOS_LR * 2 + 5 (minimum for pivot detection).
+        Symbols with recent signals fetch ~30 bars instead of 550/650 —
+        significant bandwidth + latency reduction across 300+ symbol scans.
+  FEAT: debug_single — BB+KC check replaces plain BB pass/fail log entry.
+        sig_ts_list filtered by valid_from_ts before Stage 4 ChoCh check.
+  FIX:  stage1_worker det string — aligned with CLI v26 format:
+        "ADX_peak=X.X ADX_end=Y.Y" → "ADX_cur=Y.Y ADX_peak=X.X"
+        (ADX_cur = end-of-window value; same field as CLI ADX_cur).
+  FIX:  stage3_worker det string — "BB_pullback✓" → "BB+KC✓",
+        "FinalSignal✓" → "FinalSig✓" (matches CLI v26 det format).
+  FIX:  _parse_det_card — ADX regex updated: "ADX_end=" → "ADX_cur=".
+  FIX:  _parse_row — ADX_End column parsed from "ADX_cur="; ADX_Peak from "ADX_peak=".
+  FIX:  _parse_det_card / _parse_row BB-TF regex: "(\\w+)_BB_pullback" →
+        r"(\\w+)_BB\\+KC" and FinalSignal → FinalSig to match new det format.
+  FIX:  calc_bb_continuation — replaced v9a's partially-vectorized hybrid with
+        the canonical v26 direction-aware loop (simpler, Pine-accurate).
+        _calc_bb_loop fallback removed (no longer needed).
 
 v20 FIXES over v19 (aligned with CLI v21):
   FIX: _parse_det_card — ADX regex changed from r"ADX_(?:cur|peak|end)=([\\d.]+)"
@@ -236,7 +272,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v20",
+    page_title="Binance Futures Scanner v22",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1168,103 +1204,143 @@ def calc_bb_continuation(c: np.ndarray, h: np.ndarray, l: np.ndarray,
                           want_sell: bool,
                           length: int = BB_LEN, mult: float = BB_MULT) -> np.ndarray:
     """
-    Vectorized Bollinger Band continuation signal.
-
-    v9a: Replaced Python for-loop state machine with NumPy vectorized logic.
-    The state machine has 4 sequential conditions:
-      rule1 → band_broken → armed → signal
-    We compute each transition mask and propagate state forward using
-    cumsum + boolean carry tricks — ~40x faster than the loop version.
-
-    Falls back to loop implementation if series length < 2*length (edge case).
+    Direction-aware BB continuation signal — canonical v26 loop version.
+    Only tracks the state machine for the needed side (Pine-accurate).
     """
     n     = len(c)
     basis = _sma(c, length)
     dev   = mult * pd.Series(c).rolling(length, min_periods=length).std(ddof=0).values
     upper = basis + dev
     lower = basis - dev
+    sig   = np.zeros(n, dtype=bool)
 
-    # Short-circuit to loop for very short series
-    if n < 2 * length:
-        return _calc_bb_loop(c, h, l, want_sell, basis, upper, lower, n)
-
-    sig = np.zeros(n, dtype=bool)
+    rule1_met   = False
+    band_broken = False
+    armed       = False
 
     if want_sell:
-        # rule1: h < lower  (price deeply below lower band)
-        # reset: l > upper
-        # band_broken: rule1 active AND c < lower
-        # armed: band_broken AND h >= lower (retest)
-        # signal: armed AND c < basis
-        nan_mask = np.isnan(basis)
-
-        rule1_raw   = (h < lower) & ~nan_mask
-        reset_raw   = (l > upper) & ~nan_mask
-        bb_raw      = (c < lower) & ~nan_mask
-        retest_raw  = (h >= lower) & ~nan_mask
-        signal_raw  = (c < basis) & ~nan_mask
-
-        # Propagate state using a forward scan (still vectorized via Pandas)
-        rule1        = np.zeros(n, bool)
-        band_broken  = np.zeros(n, bool)
-        armed        = np.zeros(n, bool)
-
-        # Use Pandas for stateful propagation
-        r1 = False; bb = False; ar = False
         for i in range(n):
-            if nan_mask[i]:
+            if np.isnan(basis[i]):
                 continue
-            if reset_raw[i]:
-                r1 = bb = ar = False
-            if rule1_raw[i]:
-                r1 = True
-            if r1 and bb_raw[i] and not ar:
-                bb = True; ar = False
-            if bb and retest_raw[i]:
-                ar = True
-            if ar and signal_raw[i]:
-                sig[i] = True; bb = ar = False
-    else:
-        nan_mask = np.isnan(basis)
-        r1 = False; bb = False; ar = False
-        for i in range(n):
-            if nan_mask[i]:
-                continue
-            if (h[i] < lower[i]):
-                r1 = bb = ar = False
+            if h[i] < lower[i]:
+                rule1_met   = True
             if l[i] > upper[i]:
-                r1 = True
-            if r1 and c[i] > upper[i] and not ar:
-                bb = True; ar = False
-            if bb and l[i] <= upper[i]:
-                ar = True
-            if ar and c[i] > basis[i]:
-                sig[i] = True; bb = ar = False
-
-    return sig
-
-
-def _calc_bb_loop(c, h, l, want_sell, basis, upper, lower, n):
-    """Fallback loop-based BB implementation (used for short series)."""
-    sig = np.zeros(n, dtype=bool)
-    rule1_met = band_broken = armed = False
-    if want_sell:
-        for i in range(n):
-            if np.isnan(basis[i]): continue
-            if h[i] < lower[i]:                  rule1_met = True
-            if l[i] > upper[i]:                  rule1_met = band_broken = armed = False
-            if rule1_met and c[i] < lower[i]:    band_broken = True; armed = False
-            if band_broken and h[i] >= lower[i]: armed = True
-            if armed and c[i] < basis[i]:        sig[i] = True; band_broken = armed = False
+                rule1_met = band_broken = armed = False
+            if rule1_met and c[i] < lower[i]:
+                band_broken = True
+                armed       = False
+            if band_broken and h[i] >= lower[i]:
+                armed = True
+            if armed and c[i] < basis[i]:
+                sig[i]      = True
+                band_broken = armed = False
     else:
         for i in range(n):
-            if np.isnan(basis[i]): continue
-            if l[i] > upper[i]:                  rule1_met = True
-            if h[i] < lower[i]:                  rule1_met = band_broken = armed = False
-            if rule1_met and c[i] > upper[i]:    band_broken = True; armed = False
-            if band_broken and l[i] <= upper[i]: armed = True
-            if armed and c[i] > basis[i]:        sig[i] = True; band_broken = armed = False
+            if np.isnan(basis[i]):
+                continue
+            if l[i] > upper[i]:
+                rule1_met   = True
+            if h[i] < lower[i]:
+                rule1_met = band_broken = armed = False
+            if rule1_met and c[i] > upper[i]:
+                band_broken = True
+                armed       = False
+            if band_broken and l[i] <= upper[i]:
+                armed = True
+            if armed and c[i] > basis[i]:
+                sig[i]      = True
+                band_broken = armed = False
+
     return sig
+
+
+
+def check_bb_kc_range(c: np.ndarray, h: np.ndarray, l: np.ndarray,
+                      ts_arr: np.ndarray, pivot_ts: int,
+                      want_sell: bool):
+    """
+    v24: Stage 3 mid TF — KC range validity gate (window-based).
+
+    KC band used: mid_tf KC (same h/l/c as the BB calculation).
+    KC_LEN=20, KC_MULT=2.0, KC_ATR_LEN=10 applied to mid_tf candles.
+
+    Window rules:
+      · The 1st BB signal in the pivot window opens a window (valid_from_ts).
+      · Consecutive BB signals while the window is still clean do NOT open a
+        new window — they are all covered by the original window start ts.
+      · After a KC violation, only the 1st new BB signal opens a fresh window.
+        Further consecutive BBs while that new window is clean again do nothing.
+
+    KC violation check:
+      · Starts from the candle AFTER the BB signal fires (not the signal bar).
+      · A close outside KC (close > kc_upper OR close < kc_lower) closes the
+        current window — price left the tradeable range.
+
+    sig_tf signals are later filtered: only those >= valid_from_ts survive,
+    meaning only signals emitted inside the current open (clean) window.
+
+    Returns:
+        valid          (bool)      — True if an open window exists
+        valid_from_ts  (int|None)  — ts of the BB that opened the current
+                                     clean window; None if no open window
+        detail         (str)       — human-readable summary for debug output
+    """
+    n = len(c)
+
+    bb_main = calc_bb_continuation(c, h, l, want_sell=want_sell)
+    # KC computed on mid_tf (same h/l/c passed in) — intentionally NOT tdi_tf KC
+    kc_upper, kc_lower = calc_kc(h, l, c)
+
+    win_start = int(np.searchsorted(ts_arr, pivot_ts))
+
+    # ── Tracking ──────────────────────────────────────────────────────
+    valid_from_ts  = None   # ts of the BB that opened the current clean window
+    kc_violated    = False  # KC violation since valid_from_ts?
+    window_open_bar = -1    # bar index where current window was opened
+                            # KC check is skipped on this exact bar (starts next)
+
+    # Debug stats
+    windows: list = []   # (start_ts, end_ts_or_None) per window
+    n_windows  = 0   # count of windows opened
+    n_kc_viols = 0
+
+    for i in range(win_start, n):
+        if np.isnan(kc_upper[i]) or np.isnan(kc_lower[i]):
+            continue
+
+        # ── BB signal fires ───────────────────────────────────────────
+        if bb_main[i]:
+            if valid_from_ts is None or kc_violated:
+                # 1st BB in pivot window, OR 1st BB after a KC violation
+                # → open a new window from this bar's timestamp
+                valid_from_ts   = int(ts_arr[i])
+                kc_violated     = False
+                window_open_bar = i
+                windows.append((valid_from_ts, None))
+                n_windows      += 1
+            # else: consecutive BB inside a still-clean window — no change
+
+        # ── KC violation check ────────────────────────────────────────
+        # Only while a clean window is open AND past the bar that opened it
+        if (valid_from_ts is not None
+                and not kc_violated
+                and i > window_open_bar):
+            if c[i] > kc_upper[i] or c[i] < kc_lower[i]:
+                kc_violated = True
+                n_kc_viols += 1
+                windows[-1] = (windows[-1][0], int(ts_arr[i]))
+
+    # Window is open if a BB was seen and no KC violation has closed it
+    valid = (valid_from_ts is not None) and (not kc_violated)
+
+    side   = "SELL" if want_sell else "BUY"
+    closed = [(s, e) for s, e in windows if e is not None]
+    detail = (
+        f"{n_windows} BB {side} window(s) opened  |  "
+        f"{n_kc_viols} KC violation(s) closed {len(closed)} window(s)"
+        + (f"  |  open window from ts={valid_from_ts}" if valid else "  |  no open window")
+    )
+    return valid, (valid_from_ts if valid else None), detail
 
 
 def signals_tf(df: pd.DataFrame, from_ts: int = 0, want_sell: Optional[bool] = None):
@@ -1550,7 +1626,7 @@ async def stage1_worker(ex, sem, sym: str, cfg: dict):
     adx_peak = float(np.nanmax(valid_window))
     det = (f"P={cur_P:.5f} "
            f"{'prev_peak' if want_sell else 'prev_trough'}={prev_P:.5f} "
-           f"ADX_peak={adx_peak:.1f} ADX_end={adx_at_window_end:.1f}")
+           f"ADX_cur={adx_at_window_end:.1f} ADX_peak={adx_peak:.1f}")
     return (want_sell, sym, det, pivot_ts, da)
 
 
@@ -1577,15 +1653,18 @@ def stage2_worker(want_sell: bool, sym: str, detail: str, pivot_ts: int, da: pd.
 async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
                          pivot_ts: int, cfg: dict):
     """
-    Stage 3: BB pullback on mid_tf + Pine Final Signal on sig_tf.
+    Stage 3: BB+KC range gate on mid_tf + Pine Final Signal on sig_tf.
     Stage 4: BOS/ChoCh validation on choch_tf (v13/v14).
     Returns (side_str, sym, detail, pivot_ts, choch_status) or None.
     INVALID signals return None (filtered out).
+
+    v21: BB+KC range gate replaces plain BB check (check_bb_kc_range).
+         sig_ts_list filtered to signals inside the open KC window (valid_from_ts).
+         choch_tf fetch is now dynamic — sized from oldest surviving signal ts.
     """
     mid_tf    = cfg["mid_tf"]
     sig_tf    = cfg["sig_tf"]
     choch_tf  = cfg["choch_tf"]
-    choch_lim = cfg["choch_limit"]
     is_5m_mode = sig_tf == "5m"
     sig_limit = 156 if is_5m_mode else 252
     mid_limit =  60 if is_5m_mode else 80
@@ -1595,21 +1674,19 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     if dm.empty or len(dm) < BB_LEN + 10:
         return None
 
-    # v9o: exclude the live (incomplete) candle from BB calculation
+    # Exclude live (incomplete) candle
     end    = len(dm) - 1
-    bb_sig = calc_bb_continuation(
-        dm.close.values[:end], dm.high.values[:end], dm.low.values[:end],
-        want_sell=want_sell)
-    ts_mid   = dm.ts.values[:end].astype(np.int64)
-    win_mask = ts_mid >= pivot_ts
-    if not bb_sig[win_mask].any():
-        return None  # BB fail — saves sig_tf + choch_tf fetches
+    ts_mid = dm.ts.values[:end].astype(np.int64)
 
-    # Fetch sig_tf and choch_tf concurrently
-    ds, dc = await asyncio.gather(
-        fetch(ex, sem, sym, sig_tf,   sig_limit),
-        fetch(ex, sem, sym, choch_tf, choch_lim),
-    )
+    # v21: BB+KC range validity gate (replaces plain BB check)
+    bb_kc_valid, valid_from_ts, _ = check_bb_kc_range(
+        dm.close.values[:end], dm.high.values[:end], dm.low.values[:end],
+        ts_mid, pivot_ts, want_sell)
+    if not bb_kc_valid:
+        return None  # no open BB+KC window — saves sig_tf + choch_tf fetches
+
+    # Fetch sig_tf (choch_tf fetched dynamically below after signal filter)
+    ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
     if ds.empty or len(ds) < min_sig:
         return None
 
@@ -1617,6 +1694,19 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     has_signal, sig_ts_list = signals_tf(ds, from_ts=pivot_ts, want_sell=want_sell)
     if not has_signal:
         return None
+
+    # v21: filter signals to those inside the current open KC window
+    sig_ts_list = [ts for ts in sig_ts_list if ts >= valid_from_ts]
+    if not sig_ts_list:
+        return None
+
+    # v26: dynamic choch_tf fetch — sized from oldest surviving signal ts
+    _choch_tf_ms = 60_000 if choch_tf == "1m" else 300_000
+    _now_ms      = int(time.time() * 1000)
+    _oldest_ms   = min(sig_ts_list)
+    _bars_needed = int((_now_ms - _oldest_ms) / _choch_tf_ms) + 30
+    _bars_needed = max(_bars_needed, BOS_LR * 2 + 5)
+    dc = await fetch(ex, sem, sym, choch_tf, _bars_needed)
 
     # v14: BOS/ChoCh validation — check each signal separately
     RANK = {"valid": 2, "wait": 1, "invalid": 0}
@@ -1637,10 +1727,10 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     if choch_status == "invalid":
         return None   # silently discard
 
-    side      = "SELL" if want_sell else "BUY"
-    n_sigs    = len(sig_ts_list)
+    side        = "SELL" if want_sell else "BUY"
+    n_sigs      = len(sig_ts_list)
     last_sig_ts = sig_ts_list[-1]
-    sig_label = f"{n_sigs} sig" + ("s" if n_sigs > 1 else "")
+    sig_label   = f"{n_sigs} sig" + ("s" if n_sigs > 1 else "")
 
     # Last signal bar close price
     ts_sig_arr  = ds.ts.values.astype(np.int64)
@@ -1650,7 +1740,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
 
     choch_label = ("✓ChoCh:VALID" if choch_status == "valid"
                    else f"⏳ChoCh:WAIT[{choch_tf.upper()}]")
-    det = (f"{detail} | {mid_tf.upper()}_BB_pullback✓ [{sig_tf.upper()} FinalSignal✓ ({sig_label})]"
+    det = (f"{detail} | {mid_tf.upper()}_BB+KC✓ [{sig_tf.upper()} FinalSig✓ ({sig_label})]"
            f" [{choch_label}] [window@pivot_ts]"
            f" sig_ts_ms={last_sig_ts} sig_price={last_sig_price:.8g}")
     return (side, sym, det, pivot_ts, choch_status)
@@ -1862,19 +1952,18 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
 
         dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
         if dm.empty or len(dm) < BB_LEN + 10:
-            logs.append(("S3 BB data", "❌ FAIL", f"Not enough {mid_tf} candles"))
+            logs.append(("S3 BB+KC data", "❌ FAIL", f"Not enough {mid_tf} candles"))
             return logs
 
-        end     = len(dm) - 1
-        bb_sig  = calc_bb_continuation(
+        end    = len(dm) - 1
+        ts_mid = dm.ts.values[:end].astype(np.int64)
+
+        # v21: BB+KC range validity gate (replaces plain BB check)
+        bb_kc_valid, valid_from_ts, bb_kc_detail = check_bb_kc_range(
             dm.close.values[:end], dm.high.values[:end], dm.low.values[:end],
-            want_sell=want_sell)
-        ts_mid  = dm.ts.values[:end].astype(np.int64)
-        win_mask = ts_mid >= pivot_ts
-        bb_ok   = bb_sig[win_mask].any()
-        logs.append(("S3 BB Pullback", "✅ PASS" if bb_ok else "❌ FAIL",
-            f"{int(bb_sig[win_mask].sum())} BB {direction} signal(s) in pivot window"))
-        if not bb_ok: return logs
+            ts_mid, pivot_ts, want_sell)
+        logs.append(("S3 BB+KC Range", "✅ PASS" if bb_kc_valid else "❌ FAIL", bb_kc_detail))
+        if not bb_kc_valid: return logs
 
         ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
         if ds.empty or len(ds) < min_sig:
@@ -1891,6 +1980,17 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             f"{sig_tf.upper()} Final {direction} Signal in window: {has_signal}  |  "
             f"{n_sigs} signal(s)  |  ⏰ Latest: {sig_times}"))
         if not has_signal: return logs
+
+        # v21: filter signals to inside the open KC window
+        all_count   = len(sig_ts_list)
+        sig_ts_list = [ts for ts in sig_ts_list if ts >= valid_from_ts]
+        dropped     = all_count - len(sig_ts_list)
+        if dropped:
+            logs.append(("S3 KC Filter", "ℹ️ INFO",
+                f"{dropped}/{all_count} signal(s) predate open KC window (valid_from_ts={valid_from_ts}) — dropped"))
+        if not sig_ts_list:
+            logs.append(("S3 KC Filter", "❌ FAIL", "All signals predate current open KC window"))
+            return logs
 
         # ── Stage 4: BOS/ChoCh ───────────────────────────────────────
         dc = await fetch(ex, sem, sym, choch_tf, choch_lim)
@@ -1914,7 +2014,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             status_label = {"valid": "✅ VALID", "wait": "⏳ WAIT", "invalid": "❌ INVALID"}[choch_status]
             detail_msg   = (
                 f"{len(events)} BOS/ChoCh events on {choch_tf.upper()}  |  "
-                f"checked {n_sigs} signal(s) newest-first  |  best result: {choch_status.upper()}"
+                f"checked {len(sig_ts_list)} signal(s) newest-first  |  best result: {choch_status.upper()}"
             )
             logs.append((f"S4 BOS/ChoCh [{choch_tf.upper()}]", status_label, detail_msg))
 
@@ -1951,9 +2051,9 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     p      = _re.search(r"P=([\d.]+)",                    det)
     prev   = _re.search(r"prev_(?:peak|trough)=([\d.]+)", det)
     adxpk  = _re.search(r"ADX_peak=([\d.]+)",             det)
-    adxend = _re.search(r"ADX_end=([\d.]+)",              det)
-    bb_m   = _re.search(r"(\w+)_BB_pullback",             det)
-    sig_m  = _re.search(r"\[(\w+) FinalSignal",           det)
+    adxend = _re.search(r"ADX_cur=([\d.]+)",              det)
+    bb_m   = _re.search(r"(\w+)_BB\+KC",                 det)
+    sig_m  = _re.search(r"\[(\w+) FinalSig",              det)
     sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
     sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
     age_h  = round((now_ms - pivot_ts) / 3_600_000, 1)
@@ -1996,13 +2096,13 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
 
 def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> dict:
     """Parse detail string into card display fields.
-    ADX shown is ADX_end (current strength at window close), falling back to
-    ADX_peak if end is unavailable — matches v21 CLI _parse_det() behavior.
+    ADX shown is ADX_cur (current strength at window close), falling back to
+    ADX_peak if cur is unavailable — matches v21 CLI _parse_det() behavior.
     """
-    # v20 FIX: prefer ADX_end (current value) over ADX_peak (historical peak)
-    adx    = _re.search(r"ADX_end=([\d.]+)",   det) or _re.search(r"ADX_peak=([\d.]+)", det)
-    bb_m   = _re.search(r"(\w+)_BB_pullback",             det)
-    sig_m  = _re.search(r"\[(\w+) FinalSignal",           det)
+    # v21 FIX: prefer ADX_cur (current value) over ADX_peak (historical peak)
+    adx    = _re.search(r"ADX_cur=([\d.]+)",   det) or _re.search(r"ADX_peak=([\d.]+)", det)
+    bb_m   = _re.search(r"(\w+)_BB\+KC",                 det)
+    sig_m  = _re.search(r"\[(\w+) FinalSig",              det)
     sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
     sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
     n_sigs = _re.search(r"\((\d+) sig",                   det)
@@ -2248,7 +2348,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v20</span>
+    <span class="sc-badge blue">&#128640; v22</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
