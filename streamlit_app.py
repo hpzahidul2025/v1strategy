@@ -3,16 +3,19 @@ Binance Futures Scanner - ULTRA-FAST Edition v23
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
 v23 UPDATES over v22 (aligned with CLI v27):
-  FIX:  debug_single Stage 4 — choch_tf fetch was using static cfg["choch_limit"]
-        (650 / 550 bars) instead of the dynamic bars_needed introduced in v21
-        (CLI v26/v27). Root cause: same as CLI v26→v27 fix — shallow fetch missed
-        "last before" ChoCh events, causing confirmed signals to appear as WAIT in
-        the debug output while the live scan correctly classified them as VALID.
-        Now uses the same formula as stage3_worker:
+  FIX:  debug_single Stage 4 AND stage3_worker — both used
+        max(_bars_needed, BOS_LR * 2 + 5) as the floor, omitting
+        cfg["choch_limit"] (650 / 550 bars).  The +30-only floor was far
+        too shallow to reach "last before" ChoCh events, causing confirmed
+        signals to appear as WAIT in both the live scan and debug output.
+        Root cause: same as CLI v26→v27 fix.
+        Now uses the correct three-way floor matching CLI v27:
           bars_needed = ceil((now - oldest_sig) / tf_ms) + 30 warmup
-          floor: BOS_LR * 2 + 5 (minimum for pivot detection)
-        The stale `choch_lim = cfg["choch_limit"]` assignment in debug_single
-        is now unused and can be disregarded (kept to avoid larger diff).
+          floor: max(bars_needed, cfg["choch_limit"], BOS_LR * 2 + 5)
+        cfg["choch_limit"] (650 / 550) is kept as the minimum so that
+        deep enough history is always fetched for pivot detection.
+        Symbols with recent signals still fetch only ~30 bars over the
+        floor, preserving v26's bandwidth reduction for old-edge signals.
 
 v22 UPDATES over v21:
   FIX:  debug_single S4 detail_msg — n_sigs was stale (pre-KC-filter count);
@@ -1712,12 +1715,16 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     if not sig_ts_list:
         return None
 
-    # v26: dynamic choch_tf fetch — sized from oldest surviving signal ts
+    # v27: dynamic choch_tf fetch — sized from oldest surviving signal ts.
+    # cfg["choch_limit"] is used as the minimum floor (restores the depth needed
+    # to catch "last before" ChoCh events — v26's +30-only floor was too shallow).
+    # Symbols with recent signals fetch ~30 bars over the floor; old-edge signals
+    # scale up automatically.  Floor = max(choch_limit, BOS_LR*2+5).
     _choch_tf_ms = 60_000 if choch_tf == "1m" else 300_000
     _now_ms      = int(time.time() * 1000)
     _oldest_ms   = min(sig_ts_list)
     _bars_needed = int((_now_ms - _oldest_ms) / _choch_tf_ms) + 30
-    _bars_needed = max(_bars_needed, BOS_LR * 2 + 5)
+    _bars_needed = max(_bars_needed, cfg["choch_limit"], BOS_LR * 2 + 5)
     dc = await fetch(ex, sem, sym, choch_tf, _bars_needed)
 
     # v14: BOS/ChoCh validation — check each signal separately
@@ -2005,14 +2012,15 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             return logs
 
         # ── Stage 4: BOS/ChoCh ───────────────────────────────────────
-        # v23 (CLI v27 fix): dynamic fetch sized from oldest surviving signal ts
-        # (was: static choch_lim = cfg["choch_limit"] — too shallow, missed
-        # "last before" ChoCh events, causing valid signals to appear as WAIT)
+        # v23 (CLI v27 fix): dynamic fetch sized from oldest surviving signal ts.
+        # cfg["choch_limit"] is the minimum floor — restores the depth needed to
+        # catch "last before" ChoCh events (v26's +30-only floor was too shallow,
+        # causing valid signals to appear as WAIT in debug while live scan was VALID).
         _choch_tf_ms  = 60_000 if choch_tf == "1m" else 300_000
         _now_ms       = int(time.time() * 1000)
         _oldest_ms    = min(sig_ts_list)
         _bars_needed  = int((_now_ms - _oldest_ms) / _choch_tf_ms) + 30
-        _bars_needed  = max(_bars_needed, BOS_LR * 2 + 5)
+        _bars_needed  = max(_bars_needed, cfg["choch_limit"], BOS_LR * 2 + 5)
         dc = await fetch(ex, sem, sym, choch_tf, _bars_needed)
         choch_status = "wait"
         if dc.empty or len(dc) < BOS_LR * 2 + 5:
