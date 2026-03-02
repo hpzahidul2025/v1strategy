@@ -1,6 +1,36 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v33
+Binance Futures Scanner - ULTRA-FAST Edition v36
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v36 UPDATES over v35 (aligned with CLI v28):
+  FEAT: Stage 3 mid-TF gate replaced — BB+KC range gate removed; replaced by
+        Pine "SMA Cloud BS Signals + Bayesian Filter" pullback check.
+        · calc_sma_cloud_bs_signals() checks for a Cloud BS buy/sell signal
+          on mid_tf inside the Stage 1 pivot window.
+        · valid_from_ts = first Cloud BS signal timestamp (used to gate sig_tf
+          signals; only those >= valid_from_ts survive).
+        · calc_sma_cloud_bs_debug() provides extended output for debug_single.
+        · check_bb_kc_range() / calc_bb_continuation() retained for reference
+          but no longer called from the scan pipeline or debug path.
+  FEAT: fetch() now includes open price column (arr[:, 1]) required by the
+        Cloud BS candle anatomy (body, upper/lower wick calculations).
+  FIX:  stage3_worker det string — "BB+KC✓" → "CloudBS✓".
+  FIX:  debug_single Stage 3 — "S3 BB+KC Range/Filter" log labels →
+        "S3 Cloud BS Range/Filter"; detail message updated accordingly.
+  FIX:  _parse_row / _parse_det_card BB regex: r"(\w+)_BB\+KC" →
+        r"(\w+)_CloudBS" to match the updated det string format.
+  FIX:  UI pipeline label — "BB+KC →" → "CloudBS →".
+  FIX:  NoSessionContext crash (from v35) — Streamlit widget calls now execute
+        exclusively on the main thread via queue-based state handoff.
+  CHORE: Version bump to v36; file renamed binance_futures_scanner_v36.py.
+
+v35 UPDATES over v34 (NoSessionContext fix):
+  FIX:  NoSessionContext crash — update_ui (progress bar / counter widgets)
+        was called from a background thread spawned by _run_async, but
+        Streamlit session context is thread-local. Fixed by passing a
+        lightweight _queue_callback into run_scan (no Streamlit calls), then
+        polling the queue on the main thread where the session context exists.
+  CHORE: Version bump to v35; file renamed binance_futures_scanner_v35.py.
 
 v33 UPDATES over v32:
   UI:  Full mobile-first CSS rewrite with safe-area insets (iPhone notch/home bar).
@@ -230,6 +260,8 @@ import re as _re
 import datetime
 from typing import Optional, Callable
 
+import queue
+import threading
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -2051,6 +2083,187 @@ def check_bb_kc_range(c: np.ndarray, h: np.ndarray, l: np.ndarray,
     return valid, (valid_from_ts if valid else None), detail
 
 
+def calc_sma_cloud_bs_signals(h: np.ndarray, l: np.ndarray,
+                               c: np.ndarray, o: np.ndarray,
+                               ts_arr: np.ndarray, pivot_ts: int,
+                               want_sell: bool,
+                               sma_len: int    = 20,
+                               bb_sma_p: int   = 20,
+                               bb_std_m: float = 2.5,
+                               sma_b_p: int    = 20,
+                               bayes_n: int    = 20,
+                               thresh: float   = 15.0):
+    """
+    v28 (CLI) / v36 (Streamlit): Pine Script "SMA Cloud BS Signals + Bayesian Filter" — NumPy replica.
+
+    Returns (found, valid_from_ts):
+      · found          — True if at least one Cloud BS signal (matching want_sell)
+                         fired on mid_tf inside the Stage 1 pivot window.
+      · valid_from_ts  — timestamp (ms) of the FIRST such signal (used to gate
+                         sig_tf signals: only those >= valid_from_ts survive).
+                         None if found=False.
+
+    ── SMA Cloud ─────────────────────────────────────────────────────────────
+    smaHigh = SMA(high, 20),  smaLow = SMA(low, 20),  smaMid = (H+L)/2
+    bullCloud = close >= smaMid
+
+    ── Bayesian BBSMA ────────────────────────────────────────────────────────
+    Bayesian combination of three binary indicators:
+      P_bbUpper — fraction of last N bars where close was above bbUpper
+      P_bbBasis — fraction of last N bars where close was above BB basis
+      P_sma     — fraction of last N bars where close was above SMA
+    Each normalized: p_up = p_up / (p_up + p_down)
+
+    ── Buy signal ────────────────────────────────────────────────────────────
+    bullCloud AND touchedCloudBot AND (buyCondA OR buyCondB) AND bayesBuyOk
+    ── Sell signal ───────────────────────────────────────────────────────────
+    bearCloud AND touchedCloudTop AND (sellCondA OR sellCondB) AND bayesSellOk
+    """
+    n = len(c)
+    sma_h   = _sma(h, sma_len)
+    sma_l   = _sma(l, sma_len)
+    sma_mid = (sma_h + sma_l) / 2.0
+    bull_cloud = c >= sma_mid
+    bear_cloud = ~bull_cloud
+
+    bb_basis   = _sma(c, bb_sma_p)
+    bb_std_arr = pd.Series(c).rolling(bb_sma_p, min_periods=bb_sma_p).std(ddof=0).values
+    bb_upper   = bb_basis + bb_std_m * bb_std_arr
+    sma_b_arr  = _sma(c, sma_b_p)
+
+    c_s = pd.Series(c)
+    N   = bayes_n
+    raw_bu_up = (c_s > pd.Series(bb_upper)).rolling(N, min_periods=N).mean().values
+    raw_bu_dn = (c_s < pd.Series(bb_upper)).rolling(N, min_periods=N).mean().values
+    raw_bb_up = (c_s > pd.Series(bb_basis)).rolling(N, min_periods=N).mean().values
+    raw_bb_dn = (c_s < pd.Series(bb_basis)).rolling(N, min_periods=N).mean().values
+    raw_sm_up = (c_s > pd.Series(sma_b_arr)).rolling(N, min_periods=N).mean().values
+    raw_sm_dn = (c_s < pd.Series(sma_b_arr)).rolling(N, min_periods=N).mean().values
+
+    eps   = 1e-9
+    A_up  = raw_bu_up / np.maximum(raw_bu_up + raw_bu_dn, eps)
+    B_up  = raw_bb_up / np.maximum(raw_bb_up + raw_bb_dn, eps)
+    C_up  = raw_sm_up / np.maximum(raw_sm_up + raw_sm_dn, eps)
+    A_dn  = raw_bu_dn / np.maximum(raw_bu_dn + raw_bu_up, eps)
+    B_dn  = raw_bb_dn / np.maximum(raw_bb_dn + raw_bb_up, eps)
+    C_dn  = raw_sm_dn / np.maximum(raw_sm_dn + raw_sm_up, eps)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sigma_down = np.where(A_up != 0,
+            B_up ** 2 * C_up ** 2 + (1 - A_up) * (1 - B_up) * (1 - C_up), np.nan)
+        sigma_up   = np.where(A_dn != 0,
+            B_dn ** 2 * C_dn ** 2 + (1 - A_dn) * (1 - B_dn) * (1 - C_dn), np.nan)
+
+    green_line    = np.nan_to_num(sigma_down, nan=0.0) * 100.0
+    red_line      = np.nan_to_num(sigma_up,   nan=0.0) * 100.0
+    bayes_buy_ok  = (green_line > red_line) & (green_line > thresh)
+    bayes_sell_ok = (red_line > green_line) & (red_line   > thresh)
+
+    is_bull      = c >= o
+    is_bear      = ~is_bull
+    body         = np.abs(c - o)
+    upper_wick   = h - np.maximum(c, o)
+    lower_wick   = np.minimum(c, o) - l
+    atr_vals     = calc_atr(h, l, c, 14)
+    valid_body   = body > atr_vals * 0.03
+    upper_wick_dom = (upper_wick >= body * 2) & valid_body
+    lower_wick_dom = (lower_wick >= body * 2) & valid_body
+
+    touched_cloud_top = (h >= sma_l) & (c <= sma_h)
+    touched_cloud_bot = (l <= sma_h) & (c >= sma_l)
+    sell_cond_a = is_bear & (c < sma_h)
+    sell_cond_b = is_bull & upper_wick_dom & (c < sma_h)
+    buy_cond_a  = is_bull & (c > sma_l)
+    buy_cond_b  = is_bear & lower_wick_dom & (c > sma_l)
+
+    sell_signal = bear_cloud & touched_cloud_top & (sell_cond_a | sell_cond_b) & bayes_sell_ok
+    buy_signal  = bull_cloud & touched_cloud_bot & (buy_cond_a  | buy_cond_b)  & bayes_buy_ok
+
+    win_start = int(np.searchsorted(ts_arr, pivot_ts))
+    sig_arr   = sell_signal if want_sell else buy_signal
+    sig_idxs  = np.where(sig_arr[win_start:])[0]
+
+    if sig_idxs.size == 0:
+        return False, None
+
+    first_abs  = sig_idxs[0] + win_start
+    valid_from = int(ts_arr[first_abs])
+    return True, valid_from
+
+
+def calc_sma_cloud_bs_debug(h: np.ndarray, l: np.ndarray,
+                             c: np.ndarray, o: np.ndarray,
+                             ts_arr: np.ndarray, pivot_ts: int,
+                             want_sell: bool):
+    """
+    Extended version of calc_sma_cloud_bs_signals for debug_single output.
+    Returns (found, valid_from_ts, n_total_signals, signal_details_list)
+    where signal_details_list = [(candle_offset_in_window, ts_ms), ...]
+    """
+    n = len(c)
+    sma_h   = _sma(h, 20); sma_l = _sma(l, 20)
+    sma_mid = (sma_h + sma_l) / 2.0
+    bull_cloud = c >= sma_mid; bear_cloud = ~bull_cloud
+
+    bb_basis   = _sma(c, 20)
+    bb_std_arr = pd.Series(c).rolling(20, min_periods=20).std(ddof=0).values
+    bb_upper   = bb_basis + 2.5 * bb_std_arr
+    sma_b_arr  = _sma(c, 20)
+
+    c_s = pd.Series(c); N = 20
+    raw_bu_up = (c_s > pd.Series(bb_upper)).rolling(N, min_periods=N).mean().values
+    raw_bu_dn = (c_s < pd.Series(bb_upper)).rolling(N, min_periods=N).mean().values
+    raw_bb_up = (c_s > pd.Series(bb_basis)).rolling(N, min_periods=N).mean().values
+    raw_bb_dn = (c_s < pd.Series(bb_basis)).rolling(N, min_periods=N).mean().values
+    raw_sm_up = (c_s > pd.Series(sma_b_arr)).rolling(N, min_periods=N).mean().values
+    raw_sm_dn = (c_s < pd.Series(sma_b_arr)).rolling(N, min_periods=N).mean().values
+
+    eps = 1e-9
+    A_up = raw_bu_up / np.maximum(raw_bu_up + raw_bu_dn, eps)
+    B_up = raw_bb_up / np.maximum(raw_bb_up + raw_bb_dn, eps)
+    C_up = raw_sm_up / np.maximum(raw_sm_up + raw_sm_dn, eps)
+    A_dn = raw_bu_dn / np.maximum(raw_bu_dn + raw_bu_up, eps)
+    B_dn = raw_bb_dn / np.maximum(raw_bb_dn + raw_bb_up, eps)
+    C_dn = raw_sm_dn / np.maximum(raw_sm_dn + raw_sm_up, eps)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sigma_down = np.nan_to_num(np.where(A_up != 0,
+            B_up**2 * C_up**2 + (1-A_up)*(1-B_up)*(1-C_up), np.nan), nan=0.0) * 100
+        sigma_up   = np.nan_to_num(np.where(A_dn != 0,
+            B_dn**2 * C_dn**2 + (1-A_dn)*(1-B_dn)*(1-C_dn), np.nan), nan=0.0) * 100
+
+    bayes_buy_ok  = (sigma_down > sigma_up)  & (sigma_down > 15.0)
+    bayes_sell_ok = (sigma_up > sigma_down)  & (sigma_up   > 15.0)
+
+    is_bull = c >= o; is_bear = ~is_bull
+    body    = np.abs(c - o)
+    upper_wick = h - np.maximum(c, o)
+    lower_wick = np.minimum(c, o) - l
+    atr_vals   = calc_atr(h, l, c, 14)
+    valid_body = body > atr_vals * 0.03
+    upper_wick_dom = (upper_wick >= body * 2) & valid_body
+    lower_wick_dom = (lower_wick >= body * 2) & valid_body
+
+    sell_signal = (bear_cloud & (h >= sma_l) & (c <= sma_h)
+                   & ((is_bear & (c < sma_h)) | (is_bull & upper_wick_dom & (c < sma_h)))
+                   & bayes_sell_ok)
+    buy_signal  = (bull_cloud & (l <= sma_h) & (c >= sma_l)
+                   & ((is_bull & (c > sma_l)) | (is_bear & lower_wick_dom & (c > sma_l)))
+                   & bayes_buy_ok)
+
+    win_start = int(np.searchsorted(ts_arr, pivot_ts))
+    sig_arr   = sell_signal if want_sell else buy_signal
+    sig_idxs  = np.where(sig_arr[win_start:])[0]
+
+    if sig_idxs.size == 0:
+        return False, None, 0, []
+
+    first_abs  = sig_idxs[0] + win_start
+    valid_from = int(ts_arr[first_abs])
+    details    = [(int(i + 1), int(ts_arr[i + win_start])) for i in sig_idxs]
+    return True, valid_from, len(sig_idxs), details
+
+
 def signals_tf(df: pd.DataFrame, from_ts: int = 0, want_sell: Optional[bool] = None):
     """
     Compute Pine-compatible Final Signal on a candle DataFrame.
@@ -2253,6 +2466,7 @@ async def fetch(ex, sem, sym: str, tf: str, limit: int) -> pd.DataFrame:
                 arr = np.array(raw, dtype=float)
                 return pd.DataFrame({
                     "ts":     arr[:, 0].astype(np.int64),
+                    "open":   arr[:, 1],
                     "high":   arr[:, 2],
                     "low":    arr[:, 3],
                     "close":  arr[:, 4],
@@ -2361,14 +2575,19 @@ def stage2_worker(want_sell: bool, sym: str, detail: str, pivot_ts: int, da: pd.
 async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
                          pivot_ts: int, cfg: dict):
     """
-    Stage 3: BB+KC range gate on mid_tf + Pine Final Signal on sig_tf.
+    Stage 3: SMA Cloud BS Signals + Bayesian Filter pullback on mid_tf
+             + Pine Final Signal on sig_tf.
     Stage 4: BOS/ChoCh validation on choch_tf (v13/v14).
     Returns (side_str, sym, detail, pivot_ts, choch_status) or None.
     INVALID signals return None (filtered out).
 
-    v21: BB+KC range gate replaces plain BB check (check_bb_kc_range).
-         sig_ts_list filtered to signals inside the open KC window (valid_from_ts).
-         choch_tf fetch is now dynamic — sized from oldest surviving signal ts.
+    v36 (aligned with CLI v28): BB+KC range gate replaced by Cloud BS pullback.
+         calc_sma_cloud_bs_signals() checks for a Cloud BS buy/sell signal
+         on mid_tf inside the Stage 1 pivot window.
+         valid_from_ts = first Cloud BS signal timestamp; sig_tf signals
+         filtered to >= valid_from_ts.
+         fetch() now includes open price (needed for Cloud BS candle anatomy).
+         choch_tf fetch is still dynamic — sized from oldest surviving signal ts.
     """
     mid_tf    = cfg["mid_tf"]
     sig_tf    = cfg["sig_tf"]
@@ -2379,19 +2598,20 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     min_sig   =  80
 
     dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
-    if dm.empty or len(dm) < BB_LEN + 10:
+    if dm.empty or len(dm) < max(BB_LEN, 20) + 10:
         return None
 
     # Exclude live (incomplete) candle
     end    = len(dm) - 1
     ts_mid = dm.ts.values[:end].astype(np.int64)
 
-    # v21: BB+KC range validity gate (replaces plain BB check)
-    bb_kc_valid, valid_from_ts, _ = check_bb_kc_range(
-        dm.close.values[:end], dm.high.values[:end], dm.low.values[:end],
+    # v36: Cloud BS pullback check replaces BB+KC range gate
+    cloud_bs_valid, valid_from_ts = calc_sma_cloud_bs_signals(
+        dm.high.values[:end], dm.low.values[:end],
+        dm.close.values[:end], dm.open.values[:end],
         ts_mid, pivot_ts, want_sell)
-    if not bb_kc_valid:
-        return None  # no open BB+KC window — saves sig_tf + choch_tf fetches
+    if not cloud_bs_valid:
+        return None  # no Cloud BS pullback in pivot window — skip sig_tf fetch
 
     # Fetch sig_tf (choch_tf fetched dynamically below after signal filter)
     ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
@@ -2403,7 +2623,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     if not has_signal:
         return None
 
-    # v21: filter signals to those inside the current open KC window
+    # v36: filter signals to those inside the Cloud BS open window
     sig_ts_list = [ts for ts in sig_ts_list if ts >= valid_from_ts]
     if not sig_ts_list:
         return None
@@ -2452,7 +2672,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
 
     choch_label = ("✓ChoCh:VALID" if choch_status == "valid"
                    else f"⏳ChoCh:WAIT[{choch_tf.upper()}]")
-    det = (f"{detail} | {mid_tf.upper()}_BB+KC✓ [{sig_tf.upper()} FinalSig✓ ({sig_label})]"
+    det = (f"{detail} | {mid_tf.upper()}_CloudBS✓ [{sig_tf.upper()} FinalSig✓ ({sig_label})]"
            f" [{choch_label}] [window@pivot_ts]"
            f" sig_ts_ms={last_sig_ts} sig_price={last_sig_price:.8g}")
     return (side, sym, det, pivot_ts, choch_status)
@@ -2679,19 +2899,24 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         min_sig    =  80
 
         dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
-        if dm.empty or len(dm) < BB_LEN + 10:
-            logs.append(("S3 BB+KC data", "❌ FAIL", f"Not enough {mid_tf} candles"))
+        if dm.empty or len(dm) < max(BB_LEN, 20) + 10:
+            logs.append(("S3 Cloud BS data", "❌ FAIL", f"Not enough {mid_tf} candles"))
             return logs
 
         end    = len(dm) - 1
         ts_mid = dm.ts.values[:end].astype(np.int64)
 
-        # v21: BB+KC range validity gate (replaces plain BB check)
-        bb_kc_valid, valid_from_ts, bb_kc_detail = check_bb_kc_range(
-            dm.close.values[:end], dm.high.values[:end], dm.low.values[:end],
+        # v36: Cloud BS pullback check replaces BB+KC range gate
+        cloud_found, valid_from_ts, n_cloud_sigs, cloud_details = calc_sma_cloud_bs_debug(
+            dm.high.values[:end], dm.low.values[:end],
+            dm.close.values[:end], dm.open.values[:end],
             ts_mid, pivot_ts, want_sell)
-        logs.append(("S3 BB+KC Range", "✅ PASS" if bb_kc_valid else "❌ FAIL", bb_kc_detail))
-        if not bb_kc_valid: return logs
+        cloud_detail_str = (
+            f"{n_cloud_sigs} Cloud BS {direction} signal(s) in window | "
+            f"first at ts={valid_from_ts}"
+        ) if cloud_found else f"No Cloud BS {direction} signal in pivot window"
+        logs.append(("S3 Cloud BS Range", "✅ PASS" if cloud_found else "❌ FAIL", cloud_detail_str))
+        if not cloud_found: return logs
 
         ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
         if ds.empty or len(ds) < min_sig:
@@ -2709,15 +2934,15 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             f"{n_sigs} signal(s)  |  ⏰ Latest: {sig_times}"))
         if not has_signal: return logs
 
-        # v21: filter signals to inside the open KC window
+        # v36: filter signals to inside the Cloud BS open window
         all_count   = len(sig_ts_list)
         sig_ts_list = [ts for ts in sig_ts_list if ts >= valid_from_ts]
         dropped     = all_count - len(sig_ts_list)
         if dropped:
-            logs.append(("S3 KC Filter", "ℹ️ INFO",
-                f"{dropped}/{all_count} signal(s) predate open KC window (valid_from_ts={valid_from_ts}) — dropped"))
+            logs.append(("S3 Cloud BS Filter", "ℹ️ INFO",
+                f"{dropped}/{all_count} signal(s) predate Cloud BS window (valid_from_ts={valid_from_ts}) — dropped"))
         if not sig_ts_list:
-            logs.append(("S3 KC Filter", "❌ FAIL", "All signals predate current open KC window"))
+            logs.append(("S3 Cloud BS Filter", "❌ FAIL", "All signals predate current Cloud BS window"))
             return logs
 
         # ── Stage 4: BOS/ChoCh ───────────────────────────────────────
@@ -2825,7 +3050,7 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     prev   = _re.search(r"prev_(?:peak|trough)=([\d.]+)", det)
     adxpk  = _re.search(r"ADX_peak=([\d.]+)",             det)
     adxend = _re.search(r"ADX_cur=([\d.]+)",              det)
-    bb_m   = _re.search(r"(\w+)_BB\+KC",                 det)
+    bb_m   = _re.search(r"(\w+)_CloudBS",               det)
     sig_m  = _re.search(r"\[(\w+) FinalSig",              det)
     sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
     sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
@@ -2874,7 +3099,7 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, tim
     """
     # v21 FIX: prefer ADX_cur (current value) over ADX_peak (historical peak)
     adx    = _re.search(r"ADX_cur=([\d.]+)",   det) or _re.search(r"ADX_peak=([\d.]+)", det)
-    bb_m   = _re.search(r"(\w+)_BB\+KC",                 det)
+    bb_m   = _re.search(r"(\w+)_CloudBS",               det)
     sig_m  = _re.search(r"\[(\w+) FinalSig",              det)
     sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
     sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
@@ -3358,7 +3583,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             f"<span class='sc-pill-v2 s2'><span class='pill-num-v2'>S2</span>"
             f"TDI direction <span class='pill-arr-v2'>&#8594;</span> KC Band</span>"
             f"<span class='sc-pill-v2 s3'><span class='pill-num-v2'>S3</span>"
-            f"{cfg['mid_tf'].upper()} BB+KC <span class='pill-arr-v2'>&#8594;</span> {cfg['sig_tf'].upper()} Pine Signal</span>"
+            f"{cfg['mid_tf'].upper()} CloudBS <span class='pill-arr-v2'>&#8594;</span> {cfg['sig_tf'].upper()} Pine Signal</span>"
             f"<span class='sc-pill-v2 s4'><span class='pill-num-v2'>S4</span>"
             f"{cfg['choch_tf'].upper()} BOS/ChoCh Validate</span>"
             f"</div>",
@@ -3392,6 +3617,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             ctr_ph   = st.empty()
 
             def update_ui(state: dict):
+                """Render progress — must only be called from the main thread."""
                 total   = state["total"]
                 done    = state["s1_done"]
                 elapsed = time.time() - t0
@@ -3412,8 +3638,49 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     unsafe_allow_html=True,
                 )
 
+            # ── Fix: run the async scan in a background thread and deliver
+            #    state snapshots back to the main thread via a Queue so that
+            #    all Streamlit widget calls (update_ui) happen here, on the
+            #    main script thread, avoiding NoSessionContext errors.
+            _state_q: queue.Queue = queue.Queue()
+            _result_box: list = [None]
+            _error_box:  list = [None]
+
+            def _queue_callback(s: dict):
+                """Called from the worker thread — only enqueues, never touches Streamlit."""
+                try:
+                    _state_q.put_nowait({k: list(v) if isinstance(v, list) else v
+                                         for k, v in s.items()})
+                except queue.Full:
+                    pass  # drop if full; UI will catch the next update
+
+            def _scan_target():
+                try:
+                    _result_box[0] = asyncio.run(run_scan(cfg, _queue_callback))
+                except Exception as exc:  # noqa: BLE001
+                    _error_box[0] = exc
+
+            _scan_thread = threading.Thread(target=_scan_target, daemon=True)
+            _scan_thread.start()
+
+            # Poll the queue on the main thread so Streamlit UI updates are safe
             try:
-                state = _run_async(run_scan(cfg, update_ui))
+                while _scan_thread.is_alive():
+                    try:
+                        _snap = _state_q.get(timeout=0.15)
+                        update_ui(_snap)
+                    except queue.Empty:
+                        pass
+                _scan_thread.join()
+                # Drain any remaining snapshots
+                while not _state_q.empty():
+                    try:
+                        update_ui(_state_q.get_nowait())
+                    except queue.Empty:
+                        break
+                if _error_box[0] is not None:
+                    raise _error_box[0]
+                state = _result_box[0]
             except Exception as e:
                 st.error(f"Scan failed: {e}")
                 st.exception(e)
