@@ -2782,15 +2782,35 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
 
 def _run_async(coro):
     """
-    v9f: Use get_event_loop().run_until_complete() — avoids 'loop already running'
-    errors on some Streamlit Cloud deployments where asyncio.run() conflicts with
-    the existing loop even after nest_asyncio.apply().
+    v10: Run coroutine in a dedicated background thread with its own event loop.
+
+    This avoids two failure modes on Streamlit Cloud:
+      1. 'This event loop is already running' — Streamlit runs its own async loop,
+         so get_event_loop().run_until_complete() conflicts with it.
+      2. 'Cannot reuse already awaited coroutine' — the old try/except approach
+         called asyncio.run(coro) on a coroutine that had already been (partially)
+         started by the failed run_until_complete() attempt.
+
+    Running in a fresh thread gives us a brand-new event loop with no conflicts.
     """
-    try:
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+    import threading
+
+    result_box: list = [None]
+    error_box:  list = [None]
+
+    def _target():
+        try:
+            result_box[0] = asyncio.run(coro)
+        except Exception as exc:          # noqa: BLE001
+            error_box[0] = exc
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join()
+
+    if error_box[0] is not None:
+        raise error_box[0]
+    return result_box[0]
 
 
 def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
