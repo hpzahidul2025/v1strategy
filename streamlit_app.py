@@ -1,5 +1,5 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v36
+Binance Futures Scanner - ULTRA-FAST Edition v37
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
 v36 UPDATES over v35 (aligned with CLI v28):
@@ -17,8 +17,8 @@ v36 UPDATES over v35 (aligned with CLI v28):
   FIX:  stage3_worker det string — "BB+KC✓" → "CloudBS✓".
   FIX:  debug_single Stage 3 — "S3 BB+KC Range/Filter" log labels →
         "S3 Cloud BS Range/Filter"; detail message updated accordingly.
-  FIX:  _parse_row / _parse_det_card BB regex: r"(\w+)_BB\+KC" →
-        r"(\w+)_CloudBS" to match the updated det string format.
+  FIX:  _parse_row / _parse_det_card BB regex: r"(\\w+)_BB\\+KC" →
+        r"(\\w+)_CloudBS" to match the updated det string format.
   FIX:  UI pipeline label — "BB+KC →" → "CloudBS →".
   FIX:  NoSessionContext crash (from v35) — Streamlit widget calls now execute
         exclusively on the main thread via queue-based state handoff.
@@ -145,7 +145,7 @@ v21 UPDATES over v20 (aligned with CLI v23–v26):
         "FinalSignal✓" → "FinalSig✓" (matches CLI v26 det format).
   FIX:  _parse_det_card — ADX regex updated: "ADX_end=" → "ADX_cur=".
   FIX:  _parse_row — ADX_End column parsed from "ADX_cur="; ADX_Peak from "ADX_peak=".
-  FIX:  _parse_det_card / _parse_row BB-TF regex: "(\\w+)_BB_pullback" →
+  FIX:  _parse_det_card / _parse_row BB-TF regex: r"(\\w+)_BB_pullback" →
         r"(\\w+)_BB\\+KC" and FinalSignal → FinalSig to match new det format.
   FIX:  calc_bb_continuation — replaced v9a's partially-vectorized hybrid with
         the canonical v26 direction-aware loop (simpler, Pine-accurate).
@@ -387,7 +387,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v33",
+    page_title="Binance Futures Scanner v37",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1940,6 +1940,245 @@ def calc_wt2(h: np.ndarray, l: np.ndarray, c: np.ndarray, v: np.ndarray) -> np.n
     return _sma((tci + mf + calc_rsi(s, PRESSURE_N3)) / 3.0, 6)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  v34: QM STRATEGY HELPERS  — Pine Script exact replicas
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _calc_qm_strat1(h: np.ndarray, l: np.ndarray, c: np.ndarray,
+                    zz_len: int = 5):
+    """
+    ZigZag-based QM (Strategy 1).
+    Bull QM: trend==-1, 3 swing highs where H2>H1 and H0>H1, 2 swing lows where L1>L0, close>L1
+    Bear QM: trend== 1, 3 swing lows where L2<L1 and L0<L1, 2 swing highs where H1<H0, close<H1
+    Returns (bull_qm, bear_qm) — bool arrays, rising-edge only.
+    """
+    n   = len(c)
+    h_s = pd.Series(h); l_s = pd.Series(l)
+    roll_h = h_s.rolling(zz_len, min_periods=1).max().values
+    roll_l = l_s.rolling(zz_len, min_periods=1).min().values
+    to_up   = (h >= roll_h); to_down = (l <= roll_l)
+
+    trend = np.ones(n, dtype=np.int8)
+    for i in range(1, n):
+        t = trend[i - 1]
+        if t == 1 and to_down[i]:   trend[i] = -1
+        elif t == -1 and to_up[i]:  trend[i] = 1
+        else:                        trend[i] = t
+
+    high_pts: list = []; low_pts: list = []
+    bull_raw = np.zeros(n, bool); bear_raw = np.zeros(n, bool)
+    last_to_up_bar = 0; last_to_down_bar = 0
+
+    for i in range(n):
+        if to_up[i]:   last_to_up_bar   = i
+        if to_down[i]: last_to_down_bar = i
+        if i > 0 and trend[i] != trend[i - 1]:
+            if trend[i] == 1:
+                since = max(1, i - last_to_down_bar); start = max(0, i - since)
+                seg = l[start : i + 1]; lv = float(seg.min()); li = start + int(np.argmin(seg))
+                low_pts.append((lv, li))
+            else:
+                since = max(1, i - last_to_up_bar); start = max(0, i - since)
+                seg = h[start : i + 1]; hv = float(seg.max()); hi = start + int(np.argmax(seg))
+                high_pts.append((hv, hi))
+        if len(high_pts) >= 3 and len(low_pts) >= 2:
+            h2v = high_pts[-3][0]; h1v = high_pts[-2][0]; h0v = high_pts[-1][0]
+            l1v = low_pts[-2][0];  l0v = low_pts[-1][0]
+            bull_raw[i] = (trend[i] == -1 and h2v > h1v and l1v > l0v and h0v > h1v and c[i] > l1v)
+        if len(low_pts) >= 3 and len(high_pts) >= 2:
+            l2v = low_pts[-3][0]; l1v = low_pts[-2][0]; l0v = low_pts[-1][0]
+            h1v = high_pts[-2][0]; h0v = high_pts[-1][0]
+            bear_raw[i] = (trend[i] == 1 and l2v < l1v and h1v < h0v and l0v < l1v and c[i] < h1v)
+
+    bull_qm = np.zeros(n, bool); bear_qm = np.zeros(n, bool)
+    bull_qm[1:] = bull_raw[1:] & ~bull_raw[:-1]
+    bear_qm[1:] = bear_raw[1:] & ~bear_raw[:-1]
+    return bull_qm, bear_qm
+
+
+def _calc_qm_strat2(h: np.ndarray, l: np.ndarray, c: np.ndarray, pp: int = 5):
+    """
+    Pivot-array-based QM (Strategy 2).
+    Bear QM: last-4 types HH→HL→HH→LL, v5<v1, newest pivot=bar-pp.
+    Bull QM: last-4 types LL→LH→LL→HH, v5>v1, newest pivot=bar-pp.
+    Returns (bull_qm, bear_qm) — bool arrays, one True per pattern.
+    """
+    n = len(c)
+    bull_qm = np.zeros(n, bool); bear_qm = np.zeros(n, bool)
+    piv_h = np.full(n, np.nan); piv_l = np.full(n, np.nan)
+    for i in range(2 * pp, n):
+        window_h = h[i - 2 * pp : i + 1]; window_l = l[i - 2 * pp : i + 1]
+        if h[i - pp] == window_h.max(): piv_h[i] = h[i - pp]
+        if l[i - pp] == window_l.min(): piv_l[i] = l[i - pp]
+
+    piv_h_bool = ~np.isnan(piv_h); piv_l_bool = ~np.isnan(piv_l)
+    h_val = np.full(n, np.nan); l_val = np.full(n, np.nan)
+    h_idx = np.full(n, -1, dtype=np.int64); l_idx = np.full(n, -1, dtype=np.int64)
+    _hv = np.nan; _lv = np.nan; _hi = -1; _li = -1
+    for i in range(n):
+        if piv_h_bool[i]: _hv = float(h[i - pp]); _hi = i - pp
+        if piv_l_bool[i]: _lv = float(l[i - pp]); _li = i - pp
+        h_val[i] = _hv; h_idx[i] = _hi; l_val[i] = _lv; l_idx[i] = _li
+
+    a_type: list = []; a_val: list = []; a_idx: list = []
+    bear_start = 0.0; check_be = 0; bull_start = 0.0; check_bu = 0
+
+    def push_low(i):
+        t = (("HL" if len(a_type) > 1 and a_val[-2] < l_val[i] else "LL") if len(a_type) > 1 else "L")
+        a_type.append(t); a_val.append(float(l_val[i])); a_idx.append(int(l_idx[i]))
+
+    def push_high(i):
+        t = (("HH" if len(a_type) > 1 and a_val[-2] < h_val[i] else "LH") if len(a_type) > 1 else "H")
+        a_type.append(t); a_val.append(float(h_val[i])); a_idx.append(int(h_idx[i]))
+
+    def pop_last():
+        a_type.pop(); a_val.pop(); a_idx.pop()
+
+    for i in range(n):
+        hb = piv_h_bool[i]; lb = piv_l_bool[i]
+        hv = h_val[i]; lv = l_val[i]; hi_ = h_idx[i]; li_ = l_idx[i]
+        if np.isnan(hv) or np.isnan(lv):
+            hb_eff = hb and not np.isnan(hv); lb_eff = lb and not np.isnan(lv)
+        else:
+            hb_eff = hb; lb_eff = lb
+
+        if hb_eff and lb_eff:
+            if len(a_type) > 0:
+                lt = a_type[-1]; lval = a_val[-1]
+                is_ll = lt in ("L", "LL"); is_hh = lt in ("H", "HH")
+                is_lh = lt == "LH";        is_hl = lt == "HL"
+                if is_ll:
+                    if float(piv_l[i]) < lval: pop_last(); push_low(i)
+                    else: push_high(i)
+                elif is_hh:
+                    if float(piv_h[i]) > lval: pop_last(); push_high(i)
+                    else: push_low(i)
+                elif is_lh:
+                    if float(piv_h[i]) < lval: push_low(i)
+                    elif float(piv_h[i]) > lval:
+                        if c[i] < lval: pop_last(); push_high(i)
+                        elif c[i] > lval: push_low(i)
+                elif is_hl:
+                    if float(piv_l[i]) > lval: push_high(i)
+                    elif float(piv_l[i]) < lval:
+                        if c[i] > lval: pop_last(); push_low(i)
+                        elif c[i] < lval: push_high(i)
+        elif hb_eff:
+            if len(a_type) == 0:
+                a_type.append("H"); a_val.append(float(hv)); a_idx.append(int(hi_))
+            else:
+                lt = a_type[-1]; lval = a_val[-1]
+                is_lo = lt in ("L", "HL", "LL"); is_hi = lt in ("H", "HH", "LH")
+                if is_lo:
+                    if float(piv_h[i]) > lval: push_high(i)
+                    elif float(piv_h[i]) < lval: pop_last(); push_low(i)
+                elif is_hi:
+                    if lval < float(hv): pop_last(); push_high(i)
+        elif lb_eff:
+            if len(a_type) == 0:
+                a_type.append("L"); a_val.append(float(lv)); a_idx.append(int(li_))
+            else:
+                lt = a_type[-1]; lval = a_val[-1]
+                is_lo = lt in ("L", "HL", "LL"); is_hi = lt in ("H", "HH", "LH")
+                if is_hi:
+                    if float(piv_l[i]) < lval: push_low(i)
+                    elif float(piv_l[i]) > lval: pop_last(); push_high(i)
+                elif is_lo:
+                    if lval > float(lv): pop_last(); push_low(i)
+
+        if len(a_type) > 5:
+            t1 = a_type[-1]; t2 = a_type[-2]; t3 = a_type[-3]; t4 = a_type[-4]
+            v1 = a_val[-1];  v2 = a_val[-2];  v5 = a_val[-5]; i1 = a_idx[-1]
+            bear_cond = (t1 == "LL" and t2 == "HH" and t3 == "HL" and t4 == "HH"
+                         and v5 < v1 and i1 == i - pp and check_be == 0)
+            if bear_cond:
+                bear_start = v2; check_be = 1; bear_qm[i] = True
+            if bear_start != (a_val[-2] if len(a_val) >= 2 else bear_start): check_be = 0
+            bull_cond = (t1 == "HH" and t2 == "LL" and t3 == "LH" and t4 == "LL"
+                         and v5 > v1 and i1 == i - pp and check_bu == 0)
+            if bull_cond:
+                bull_start = v2; check_bu = 1; bull_qm[i] = True
+            if bull_start != (a_val[-2] if len(a_val) >= 2 else bull_start): check_bu = 0
+
+    return bull_qm, bear_qm
+
+
+def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
+                      want_sell: bool,
+                      zz_len: int = 5, s2_pp: int = 5,
+                      ltf_zz_len=None, ltf_s2_pp=None):
+    """
+    v34: QM + Pressure gate (replaces old signals_tf Pine Final Signal logic).
+    Window: pivot_win_ts (cur_P open = pivot fires) → pivot_end_ts (now).
+
+    Pressure dot arms latch. TSL dirMain flip in wrong direction resets latch.
+    Chart-TF QM OR lower-TF QM fires while latch armed → valid signal, latch consumed.
+    Returns (found: bool, sig_ts_list: list[int], sig_kind_list: list[str])
+    """
+    h  = ds_sig.high.values;  l  = ds_sig.low.values
+    c  = ds_sig.close.values; v  = ds_sig.volume.values
+    ts = ds_sig.ts.values.astype(np.int64)
+    n  = len(c)
+
+    tsl_main, dir_main = f_swing(h, l, c, SWING_UTAMA)
+    above_tsl = c > tsl_main; below_tsl = c < tsl_main
+    wt2 = calc_wt2(h, l, c, v)
+
+    if want_sell: raw_p = (wt2 > 80) & below_tsl
+    else:         raw_p = (wt2 < 20) & above_tsl
+    pressure = np.zeros(n, bool)
+    pressure[1:] = raw_p[1:] & ~raw_p[:-1]
+
+    s1_bull, s1_bear = _calc_qm_strat1(h, l, c, zz_len=zz_len)
+    s2_bull, s2_bear = _calc_qm_strat2(h, l, c, pp=s2_pp)
+    qm_bull_sig = s1_bull | s2_bull; qm_bear_sig = s1_bear | s2_bear
+    qm_sig      = qm_bear_sig if want_sell else qm_bull_sig
+    qm_sig_filtered = qm_sig & (below_tsl if want_sell else above_tsl)
+
+    ltf_bull_qm = np.empty(0, bool); ltf_bear_qm = np.empty(0, bool)
+    ltf_ts      = np.empty(0, dtype=np.int64)
+    _ltf_zz = ltf_zz_len if ltf_zz_len is not None else zz_len
+    _ltf_pp = ltf_s2_pp  if ltf_s2_pp  is not None else s2_pp
+
+    if ds_lower is not None and not ds_lower.empty and len(ds_lower) >= 20:
+        lh = ds_lower.high.values; ll = ds_lower.low.values; lc = ds_lower.close.values
+        l1b, l1s = _calc_qm_strat1(lh, ll, lc, zz_len=_ltf_zz)
+        l2b, l2s = _calc_qm_strat2(lh, ll, lc, pp=_ltf_pp)
+        ltf_bull_qm = l1b | l2b; ltf_bear_qm = l1s | l2s
+        ltf_ts = ds_lower.ts.values.astype(np.int64)
+
+    ltf_qm = ltf_bear_qm if want_sell else ltf_bull_qm
+
+    win_start = int(np.searchsorted(ts, pivot_win_ts))
+    win_end   = int(np.searchsorted(ts, pivot_end_ts))
+
+    had_pressure  = False
+    sig_ts_list:   list = []
+    sig_kind_list: list = []
+
+    for i in range(win_start, min(win_end, n - 1)):
+        if i > 0 and dir_main[i] != dir_main[i - 1]:
+            if want_sell     and dir_main[i] > 0: had_pressure = False
+            if not want_sell and dir_main[i] < 0: had_pressure = False
+        if pressure[i]:
+            had_pressure = True
+        if had_pressure and qm_sig_filtered[i]:
+            sig_ts_list.append(int(ts[i])); sig_kind_list.append("QM")
+            had_pressure = False
+        if had_pressure and ltf_ts.size > 0:
+            tsl_ok = below_tsl[i] if want_sell else above_tsl[i]
+            if tsl_ok:
+                t_lo = int(ts[i])
+                t_hi = (int(ts[i + 1]) if i + 1 < n else t_lo + (int(ts[i]) - int(ts[i - 1])))
+                mask = (ltf_ts >= t_lo) & (ltf_ts < t_hi) & ltf_qm[:len(ltf_ts)]
+                if mask.any():
+                    first_ltf = int(ltf_ts[np.where(mask)[0][0]])
+                    sig_ts_list.append(first_ltf); sig_kind_list.append("MTF QM")
+                    had_pressure = False
+
+    return len(sig_ts_list) > 0, sig_ts_list, sig_kind_list
+
+
 def calc_bb_continuation(c: np.ndarray, h: np.ndarray, l: np.ndarray,
                           want_sell: bool,
                           length: int = BB_LEN, mult: float = BB_MULT) -> np.ndarray:
@@ -2085,7 +2324,8 @@ def check_bb_kc_range(c: np.ndarray, h: np.ndarray, l: np.ndarray,
 
 def calc_sma_cloud_bs_signals(h: np.ndarray, l: np.ndarray,
                                c: np.ndarray, o: np.ndarray,
-                               ts_arr: np.ndarray, pivot_ts: int,
+                               ts_arr: np.ndarray, pivot_win_ts: int,
+                               pivot_end_ts: int,
                                want_sell: bool,
                                sma_len: int    = 20,
                                bb_sma_p: int   = 20,
@@ -2094,7 +2334,7 @@ def calc_sma_cloud_bs_signals(h: np.ndarray, l: np.ndarray,
                                bayes_n: int    = 20,
                                thresh: float   = 15.0):
     """
-    v28 (CLI) / v36 (Streamlit): Pine Script "SMA Cloud BS Signals + Bayesian Filter" — NumPy replica.
+    v34 (CLI) / v37 (Streamlit): Pine Script "SMA Cloud BS Signals + Bayesian Filter" — NumPy replica.
 
     Returns (found, valid_from_ts):
       · found          — True if at least one Cloud BS signal (matching want_sell)
@@ -2179,9 +2419,10 @@ def calc_sma_cloud_bs_signals(h: np.ndarray, l: np.ndarray,
     sell_signal = bear_cloud & touched_cloud_top & (sell_cond_a | sell_cond_b) & bayes_sell_ok
     buy_signal  = bull_cloud & touched_cloud_bot & (buy_cond_a  | buy_cond_b)  & bayes_buy_ok
 
-    win_start = int(np.searchsorted(ts_arr, pivot_ts))
+    win_start = int(np.searchsorted(ts_arr, pivot_win_ts))
+    win_end   = int(np.searchsorted(ts_arr, pivot_end_ts))
     sig_arr   = sell_signal if want_sell else buy_signal
-    sig_idxs  = np.where(sig_arr[win_start:])[0]
+    sig_idxs  = np.where(sig_arr[win_start:win_end])[0]
 
     if sig_idxs.size == 0:
         return False, None
@@ -2193,7 +2434,8 @@ def calc_sma_cloud_bs_signals(h: np.ndarray, l: np.ndarray,
 
 def calc_sma_cloud_bs_debug(h: np.ndarray, l: np.ndarray,
                              c: np.ndarray, o: np.ndarray,
-                             ts_arr: np.ndarray, pivot_ts: int,
+                             ts_arr: np.ndarray, pivot_win_ts: int,
+                             pivot_end_ts: int,
                              want_sell: bool):
     """
     Extended version of calc_sma_cloud_bs_signals for debug_single output.
@@ -2251,9 +2493,10 @@ def calc_sma_cloud_bs_debug(h: np.ndarray, l: np.ndarray,
                    & ((is_bull & (c > sma_l)) | (is_bear & lower_wick_dom & (c > sma_l)))
                    & bayes_buy_ok)
 
-    win_start = int(np.searchsorted(ts_arr, pivot_ts))
+    win_start = int(np.searchsorted(ts_arr, pivot_win_ts))
+    win_end   = int(np.searchsorted(ts_arr, pivot_end_ts))
     sig_arr   = sell_signal if want_sell else buy_signal
-    sig_idxs  = np.where(sig_arr[win_start:])[0]
+    sig_idxs  = np.where(sig_arr[win_start:win_end])[0]
 
     if sig_idxs.size == 0:
         return False, None, 0, []
@@ -2500,7 +2743,9 @@ async def fetch_raw(ex, sem, sym: str, tf: str, limit: int) -> Optional[np.ndarr
 async def stage1_worker(ex, sem, sym: str, cfg: dict):
     """
     Stage 1: Pivot pattern detection + ADX momentum filter.
-    Returns (want_sell, sym, detail_str, pivot_ts_ms, tdi_df) or None.
+    v34 fixes: pivot_ts/pivot_win_ts/pivot_confirmed_ts anchoring,
+               age gate uses pivot_confirmed_ts, ADX window pp_P→cur_P_close.
+    Returns (want_sell, sym, detail_str, pivot_ts, pivot_win_ts, pivot_end_ts, tdi_df) or None.
     """
     pivot_tf = cfg["pivot_tf"]
     tdi_tf   = cfg["tdi_tf"]
@@ -2509,8 +2754,11 @@ async def stage1_worker(ex, sem, sym: str, cfg: dict):
     if arr_p is None or len(arr_p) < 6:
         return None
 
-    # arr_p columns: [ts, open, high, low, close, vol]
-    pivot_ts = int(arr_p[-2, 0])
+    # v34 FIX: correct pivot timestamp anchoring
+    pivot_ts           = int(arr_p[-3, 0])  # bar[-3] = prev_P = the peak/trough itself
+    pivot_win_ts       = int(arr_p[-2, 0])  # bar[-2] = cur_P open = pivot FIRES = Stage 3 window start
+    pivot_confirmed_ts = int(arr_p[-1, 0])  # bar[-1] open = close of cur_P = when pivot was confirmed
+    pivot_end_ts       = int(time.time() * 1000)  # window open until next pivot fires; use now
 
     def _hlc3(row): return (row[2] + row[3] + row[4]) / 3.0
     cur_P  = _hlc3(arr_p[-2]);  prev_P = _hlc3(arr_p[-3])
@@ -2520,22 +2768,24 @@ async def stage1_worker(ex, sem, sym: str, cfg: dict):
     elif cur_P > prev_P and prev_P < min(pp_P, ppp_P): want_sell = False
     else: return None
 
-    # Pivot age gate
+    # v34 FIX: age measured from pivot_confirmed_ts (not pivot_ts)
     is_5m_s1 = tdi_tf == "1h"
     max_age  = (8 * 3600 * 1000) if is_5m_s1 else (48 * 3600 * 1000)
-    if int(time.time() * 1000) - pivot_ts > max_age:
+    if int(time.time() * 1000) - pivot_confirmed_ts > max_age:
         return None
 
     da = await fetch(ex, sem, sym, tdi_tf, 80)
     if da.empty or len(da) < ADX_LEN * 2:
         return None
 
-    adx_arr     = calc_adx(da.high.values, da.low.values, da.close.values)
-    pp_P_ts     = int(arr_p[-4, 0])
-    piv4_ts     = int(arr_p[-1, 0])
-    ts_vals     = da["ts"].values.astype(np.int64)
-    window_mask = (ts_vals >= pp_P_ts) & (ts_vals <= piv4_ts)
-    adx_window  = adx_arr[window_mask]
+    adx_arr = calc_adx(da.high.values, da.low.values, da.close.values)
+
+    # v34 FIX: ADX window pp_P (arr_p[-4]) → cur_P close (arr_p[-1])
+    pp_P_ts    = int(arr_p[-4, 0])   # ADX window starts at pp_P
+    adx_end_ts = int(arr_p[-1, 0])   # ADX window ends at cur_P close = pivot_confirmed_ts
+    ts_vals      = da["ts"].values.astype(np.int64)
+    window_mask  = (ts_vals >= pp_P_ts) & (ts_vals <= adx_end_ts)
+    adx_window   = adx_arr[window_mask]
     valid_window = adx_window[~np.isnan(adx_window)]
     if len(valid_window) == 0:
         return None
@@ -2549,13 +2799,14 @@ async def stage1_worker(ex, sem, sym: str, cfg: dict):
     det = (f"P={cur_P:.5f} "
            f"{'prev_peak' if want_sell else 'prev_trough'}={prev_P:.5f} "
            f"ADX_cur={adx_at_window_end:.1f} ADX_peak={adx_peak:.1f}")
-    return (want_sell, sym, det, pivot_ts, da)
+    return (want_sell, sym, det, pivot_ts, pivot_win_ts, pivot_end_ts, da)
 
 
-def stage2_worker(want_sell: bool, sym: str, detail: str, pivot_ts: int, da: pd.DataFrame):
+def stage2_worker(want_sell: bool, sym: str, detail: str, pivot_ts: int,
+                  pivot_win_ts: int, pivot_end_ts: int, da: pd.DataFrame):
     """
     Stage 2: TDI direction + Keltner Channel band filter.
-    Returns (want_sell, sym, detail, pivot_ts) or None.
+    Returns (want_sell, sym, detail, pivot_ts, pivot_win_ts, pivot_end_ts) or None.
     """
     if da.empty or len(da) < 60:
         return None
@@ -2565,117 +2816,86 @@ def stage2_worker(want_sell: bool, sym: str, detail: str, pivot_ts: int, da: pd.
     n_t = len(da); s15 = max(0, n_t - 16); e15 = n_t - 1
     if want_sell:
         if bear_tdi and c_t > l_t[-1] and bool(np.all(da.low.values[s15:e15] > l_t[s15:e15])):
-            return (want_sell, sym, detail, pivot_ts)
+            return (want_sell, sym, detail, pivot_ts, pivot_win_ts, pivot_end_ts)
     else:
         if bull_tdi and c_t < u_t[-1] and bool(np.all(da.high.values[s15:e15] < u_t[s15:e15])):
-            return (want_sell, sym, detail, pivot_ts)
+            return (want_sell, sym, detail, pivot_ts, pivot_win_ts, pivot_end_ts)
     return None
 
 
 async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
-                         pivot_ts: int, cfg: dict):
+                         pivot_ts: int, pivot_win_ts: int, pivot_end_ts: int,
+                         cfg: dict):
     """
-    Stage 3: SMA Cloud BS Signals + Bayesian Filter pullback on mid_tf
-             + Pine Final Signal on sig_tf.
-    Stage 4: BOS/ChoCh validation on choch_tf (v13/v14).
-    Returns (side_str, sym, detail, pivot_ts, choch_status) or None.
-    INVALID signals return None (filtered out).
+    v34 Stage 3:
+      3a — Cloud BS pullback gate on mid_tf (pure pass/fail).
+           Window: pivot_win_ts (cur_P open) → pivot_end_ts (now).
+      3b — QM pressure-dot → latch → QM structure on sig_tf or lower_tf.
+           sig_tf + lower_tf (choch_tf) fetched concurrently after 3a passes.
 
-    v36 (aligned with CLI v28): BB+KC range gate replaced by Cloud BS pullback.
-         calc_sma_cloud_bs_signals() checks for a Cloud BS buy/sell signal
-         on mid_tf inside the Stage 1 pivot window.
-         valid_from_ts = first Cloud BS signal timestamp; sig_tf signals
-         filtered to >= valid_from_ts.
-         fetch() now includes open price (needed for Cloud BS candle anatomy).
-         choch_tf fetch is still dynamic — sized from oldest surviving signal ts.
+    v34 FIX: sig_limit=165/270, mid_limit=80/95, ltf_limit=cfg["choch_limit"].
+    v34 FIX: ltf_zz_len/ltf_s2_pp=10 for 5m mode (1M lower-TF QM).
+    Returns (side_str, sym, detail, pivot_ts, "valid") or None.
     """
-    mid_tf    = cfg["mid_tf"]
-    sig_tf    = cfg["sig_tf"]
-    choch_tf  = cfg["choch_tf"]
+    mid_tf   = cfg["mid_tf"]
+    sig_tf   = cfg["sig_tf"]
+    choch_tf = cfg["choch_tf"]   # lower_tf for MTF QM path
+
     is_5m_mode = sig_tf == "5m"
-    sig_limit = 156 if is_5m_mode else 252
-    mid_limit =  60 if is_5m_mode else 80
-    min_sig   =  80
+    sig_limit  = 165 if is_5m_mode else 270   # v34 FIX: bumped safety margin
+    mid_limit  =  80 if is_5m_mode else 95    # v34 FIX: Bayes warmup + full pivot window
+    ltf_limit  = cfg["choch_limit"]           # v34 FIX: was hardcoded 200 (15M→650, 5M→550)
+    min_sig    = 80
 
+    # ── Stage 3a: Cloud BS pullback gate (mid_tf) ─────────────────────────
     dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
     if dm.empty or len(dm) < max(BB_LEN, 20) + 10:
         return None
 
-    # Exclude live (incomplete) candle
     end    = len(dm) - 1
     ts_mid = dm.ts.values[:end].astype(np.int64)
 
-    # v36: Cloud BS pullback check replaces BB+KC range gate
-    cloud_bs_valid, valid_from_ts = calc_sma_cloud_bs_signals(
+    cloud_ok, _valid_from_ts = calc_sma_cloud_bs_signals(
         dm.high.values[:end], dm.low.values[:end],
         dm.close.values[:end], dm.open.values[:end],
-        ts_mid, pivot_ts, want_sell)
-    if not cloud_bs_valid:
-        return None  # no Cloud BS pullback in pivot window — skip sig_tf fetch
+        ts_mid, pivot_win_ts, pivot_end_ts, want_sell)
 
-    # Fetch sig_tf (choch_tf fetched dynamically below after signal filter)
-    ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
+    if not cloud_ok:
+        return None
+
+    # ── Stage 3b: QM pressure gate (sig_tf + lower_tf concurrently) ──────
+    ds, dl = await asyncio.gather(
+        fetch(ex, sem, sym, sig_tf,   sig_limit),
+        fetch(ex, sem, sym, choch_tf, ltf_limit),
+    )
+
     if ds.empty or len(ds) < min_sig:
         return None
 
-    # v14: returns (found, [ts_ms, ...]) — all signal timestamps
-    has_signal, sig_ts_list = signals_tf(ds, from_ts=pivot_ts, want_sell=want_sell)
-    if not has_signal:
+    ds_lower = dl if (not dl.empty and len(dl) >= 20) else pd.DataFrame()
+
+    found, sig_ts_list, sig_kind_list = signals_pine_only(
+        ds, ds_lower, pivot_win_ts, pivot_end_ts, want_sell,
+        ltf_zz_len=10 if is_5m_mode else None,
+        ltf_s2_pp =10 if is_5m_mode else None)
+
+    if not found:
         return None
 
-    # v36: filter signals to those inside the Cloud BS open window
-    sig_ts_list = [ts for ts in sig_ts_list if ts >= valid_from_ts]
-    if not sig_ts_list:
-        return None
+    side      = "SELL" if want_sell else "BUY"
+    n_sigs    = len(sig_ts_list)
+    sig_label = f"{n_sigs} sig" + ("s" if n_sigs > 1 else "")
 
-    # v27: dynamic choch_tf fetch — sized from oldest surviving signal ts.
-    # cfg["choch_limit"] is used as the minimum floor (restores the depth needed
-    # to catch "last before" ChoCh events — v26's +30-only floor was too shallow).
-    # Symbols with recent signals fetch ~30 bars over the floor; old-edge signals
-    # scale up automatically.  Floor = max(choch_limit, BOS_LR*2+5).
-    _choch_tf_ms = 60_000 if choch_tf == "1m" else 300_000
-    _now_ms      = int(time.time() * 1000)
-    _oldest_ms   = min(sig_ts_list)
-    _bars_needed = int((_now_ms - _oldest_ms) / _choch_tf_ms) + 30
-    _bars_needed = max(_bars_needed, cfg["choch_limit"], BOS_LR * 2 + 5)
-    dc = await fetch(ex, sem, sym, choch_tf, _bars_needed)
-
-    # v14: BOS/ChoCh validation — check each signal separately
-    RANK = {"valid": 2, "wait": 1, "invalid": 0}
-    choch_status = "wait"   # default if data unavailable
-
-    if not dc.empty and len(dc) >= BOS_LR * 2 + 5:
-        events    = calc_bos_choch(dc, left=BOS_LR, right=BOS_LR)
-        best_rank = -1
-        for sig_ts_ms in reversed(sig_ts_list):   # newest → oldest
-            choch_result = validate_choch(events, sig_ts_ms, want_sell)
-            rank = RANK[choch_result]
-            if rank > best_rank:
-                best_rank    = rank
-                choch_status = choch_result
-            if choch_status == "valid":
-                break
-
-    if choch_status == "invalid":
-        return None   # silently discard
-
-    side        = "SELL" if want_sell else "BUY"
-    n_sigs      = len(sig_ts_list)
     last_sig_ts = sig_ts_list[-1]
-    sig_label   = f"{n_sigs} sig" + ("s" if n_sigs > 1 else "")
-
-    # Last signal bar close price
     ts_sig_arr  = ds.ts.values.astype(np.int64)
     sig_bar_idx = int(np.searchsorted(ts_sig_arr, last_sig_ts, side="left"))
     sig_bar_idx = min(sig_bar_idx, len(ds) - 1)
     last_sig_price = float(ds.close.iloc[sig_bar_idx])
 
-    choch_label = ("✓ChoCh:VALID" if choch_status == "valid"
-                   else f"⏳ChoCh:WAIT[{choch_tf.upper()}]")
-    det = (f"{detail} | {mid_tf.upper()}_CloudBS✓ [{sig_tf.upper()} FinalSig✓ ({sig_label})]"
-           f" [{choch_label}] [window@pivot_ts]"
+    det = (f"{detail} | {mid_tf.upper()}_CloudBS\u2713 [{sig_tf.upper()}_QM\u2713 ({sig_label})]"
+           f" [window@pivot_ts]"
            f" sig_ts_ms={last_sig_ts} sig_price={last_sig_price:.8g}")
-    return (side, sym, det, pivot_ts, choch_status)
+    return (side, sym, det, pivot_ts, "valid")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2732,17 +2952,17 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
             if r1 is None:
                 return
 
-            want_sell, sym, detail, pivot_ts, da = r1
+            want_sell, sym, detail, pivot_ts, pivot_win_ts, pivot_end_ts, da = r1
             state["s2_in"] += 1
 
-            r2 = stage2_worker(want_sell, sym, detail, pivot_ts, da)
+            r2 = stage2_worker(want_sell, sym, detail, pivot_ts, pivot_win_ts, pivot_end_ts, da)
             if r2 is None:
                 return
 
-            want_sell, sym, detail, pivot_ts = r2
+            want_sell, sym, detail, pivot_ts, pivot_win_ts, pivot_end_ts = r2
             state["s3_in"] += 1
 
-            r3 = await stage3_worker(ex, sem, sym, want_sell, detail, pivot_ts, cfg)
+            r3 = await stage3_worker(ex, sem, sym, want_sell, detail, pivot_ts, pivot_win_ts, pivot_end_ts, cfg)
             if r3:
                 side, sym2, det2, pt, choch_st = r3
                 entry = (sym2, det2, pt, choch_st)
@@ -2814,7 +3034,12 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             logs.append(("S1 ADX data",   "❌ FAIL", f"Not enough {tdi_tf} candles"))
             return logs
 
-        pivot_ts = int(dp.iloc[-2]["ts"])
+        # v34 FIX: correct pivot timestamp anchoring
+        arr_p_ts           = dp["ts"].values.astype(np.int64)
+        pivot_ts           = int(arr_p_ts[-3])   # bar[-3] = prev_P = peak/trough itself
+        pivot_win_ts       = int(arr_p_ts[-2])   # bar[-2] = cur_P open = pivot FIRES
+        pivot_confirmed_ts = int(arr_p_ts[-1])   # bar[-1] open = close of cur_P
+        pivot_end_ts       = int(time.time() * 1000)
         cur_P, prev_P, pp_P, ppp_P = pivot_chain(dp)
 
         if cur_P is None:
@@ -2838,12 +3063,12 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             return logs
 
         # ── Stage 1: ADX check ───────────────────────────────────────
+        # v34 FIX: ADX window pp_P (arr_p_ts[-4]) → cur_P close (arr_p_ts[-1])
         adx_arr      = calc_adx(da.high.values, da.low.values, da.close.values)
-        arr_p_ts     = dp["ts"].values.astype(np.int64)
-        pp_P_ts      = int(arr_p_ts[-4])
-        piv4_ts      = int(arr_p_ts[-1])
+        pp_P_ts      = int(arr_p_ts[-4])   # ADX starts at pp_P
+        adx_end_ts   = int(arr_p_ts[-1])   # ADX ends at cur_P close
         ts_vals      = da["ts"].values.astype(np.int64)
-        window_mask  = (ts_vals >= pp_P_ts) & (ts_vals <= piv4_ts)
+        window_mask  = (ts_vals >= pp_P_ts) & (ts_vals <= adx_end_ts)
         adx_window   = adx_arr[window_mask]
         valid_window = adx_window[~np.isnan(adx_window)]
 
@@ -2892,109 +3117,100 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             f"Last 15 {'lows > KC lower' if want_sell else 'highs < KC upper'}: {band_ok}"))
         if not band_ok: return logs
 
-        # ── Stage 3 ──────────────────────────────────────────────────
+        # ── Stage 3a: Cloud BS pullback gate (mid_tf) ────────────────
         is_5m_mode = sig_tf == "5m"
-        sig_limit  = 156 if is_5m_mode else 252
-        mid_limit  =  60 if is_5m_mode else 80
+        sig_limit  = 165 if is_5m_mode else 270   # v34 FIX: bumped safety margin
+        mid_limit  =  80 if is_5m_mode else 95    # v34 FIX: Bayes warmup + full pivot window
+        ltf_limit  = cfg["choch_limit"]           # v34 FIX: was hardcoded 200 → use cfg
         min_sig    =  80
+
+        # v34 FIX: age gate uses pivot_confirmed_ts
+        max_pivot_age_ms = (8 * 3600 * 1000) if is_5m_mode else (48 * 3600 * 1000)
+        if int(time.time() * 1000) - pivot_confirmed_ts > max_pivot_age_ms:
+            max_h = 8 if is_5m_mode else 48
+            age_h = (int(time.time() * 1000) - pivot_confirmed_ts) / 3_600_000
+            logs.append(("S3a Pivot age", "❌ FAIL",
+                f"Pivot too old: confirmed {age_h:.1f}h ago (max {max_h}h for {sig_tf} mode)"))
+            return logs
 
         dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
         if dm.empty or len(dm) < max(BB_LEN, 20) + 10:
-            logs.append(("S3 Cloud BS data", "❌ FAIL", f"Not enough {mid_tf} candles"))
+            logs.append(("S3a Cloud BS data", "❌ FAIL", f"Not enough {mid_tf} candles"))
             return logs
 
         end    = len(dm) - 1
         ts_mid = dm.ts.values[:end].astype(np.int64)
+        win_bars = int((ts_mid >= pivot_win_ts).sum())
+        logs.append(("S3a Window", "ℹ️ INFO",
+            f"{win_bars} {mid_tf} candles in pivot window (from cur_P open = pivot fires)"))
 
-        # v36: Cloud BS pullback check replaces BB+KC range gate
         cloud_found, valid_from_ts, n_cloud_sigs, cloud_details = calc_sma_cloud_bs_debug(
             dm.high.values[:end], dm.low.values[:end],
             dm.close.values[:end], dm.open.values[:end],
-            ts_mid, pivot_ts, want_sell)
+            ts_mid, pivot_win_ts, pivot_end_ts, want_sell)
+
+        now_ms_dbg = time.time() * 1000
+        def _age(ts_ms):
+            m = (now_ms_dbg - ts_ms) / 60_000
+            return (f"{m:.0f}m ago" if m < 60 else f"{m/60:.1f}h ago" if m < 1440 else f"{m/1440:.1f}d ago")
+
         cloud_detail_str = (
             f"{n_cloud_sigs} Cloud BS {direction} signal(s) in window | "
-            f"first at ts={valid_from_ts}"
+            f"first at ts={valid_from_ts}  ({_age(valid_from_ts) if valid_from_ts else '—'})"
         ) if cloud_found else f"No Cloud BS {direction} signal in pivot window"
-        logs.append(("S3 Cloud BS Range", "✅ PASS" if cloud_found else "❌ FAIL", cloud_detail_str))
-        if not cloud_found: return logs
+        logs.append(("S3a Cloud BS", "✅ PASS" if cloud_found else "❌ FAIL", cloud_detail_str))
+        if not cloud_found:
+            return logs
 
-        ds = await fetch(ex, sem, sym, sig_tf, sig_limit)
+        # ── Stage 3b: QM pressure gate (sig_tf + lower_tf) ───────────
+        ds, dl = await asyncio.gather(
+            fetch(ex, sem, sym, sig_tf,   sig_limit),
+            fetch(ex, sem, sym, choch_tf, ltf_limit),
+        )
         if ds.empty or len(ds) < min_sig:
-            logs.append(("S3 Sig data", "❌ FAIL", f"Not enough {sig_tf} candles"))
+            logs.append(("S3b Sig data", "❌ FAIL", f"Not enough {sig_tf} candles (need ≥ {min_sig})"))
             return logs
 
-        has_signal, sig_ts_list = signals_tf(ds, from_ts=pivot_ts, want_sell=want_sell)
+        ds_lower = dl if (not dl.empty and len(dl) >= 20) else pd.DataFrame()
+        ltf_label = f"{choch_tf} ({len(dl)} bars)" if not dl.empty else f"{choch_tf} (unavailable)"
+        logs.append(("S3b Fetched", "ℹ️ INFO",
+            f"{sig_tf}={len(ds)} bars  |  lower_tf={ltf_label}"))
+
+        _is_5m = sig_tf == "5m"
+        found, sig_ts_list, sig_kind_list = signals_pine_only(
+            ds, ds_lower, pivot_win_ts, pivot_end_ts, want_sell,
+            ltf_zz_len=10 if _is_5m else None,
+            ltf_s2_pp =10 if _is_5m else None)
+
         n_sigs = len(sig_ts_list)
-        sig_times = ""
-        if sig_ts_list:
-            last_ts = sig_ts_list[-1]
-            sig_times = _fmt_ts(last_ts, tz_h, tz_label, time_fmt)
-        logs.append(("S3 Pine Final Signal", "✅ PASS" if has_signal else "❌ FAIL",
-            f"{sig_tf.upper()} Final {direction} Signal in window: {has_signal}  |  "
-            f"{n_sigs} signal(s)  |  ⏰ Latest: {sig_times}"))
-        if not has_signal: return logs
+        if found:
+            n_qm  = sig_kind_list.count("QM")
+            n_mtf = sig_kind_list.count("MTF QM")
+            kind_sum = (f"QM×{n_qm}" if n_qm else "") + (" MTF QM×" + str(n_mtf) if n_mtf else "")
+            sig_detail = f"{n_sigs} signal(s) [{kind_sum.strip()}] | latest: {_age(sig_ts_list[-1])}"
+        else:
+            sig_detail = f"No QM signals in pivot window on {sig_tf}/{choch_tf}"
 
-        # v36: filter signals to inside the Cloud BS open window
-        all_count   = len(sig_ts_list)
-        sig_ts_list = [ts for ts in sig_ts_list if ts >= valid_from_ts]
-        dropped     = all_count - len(sig_ts_list)
-        if dropped:
-            logs.append(("S3 Cloud BS Filter", "ℹ️ INFO",
-                f"{dropped}/{all_count} signal(s) predate Cloud BS window (valid_from_ts={valid_from_ts}) — dropped"))
-        if not sig_ts_list:
-            logs.append(("S3 Cloud BS Filter", "❌ FAIL", "All signals predate current Cloud BS window"))
+        logs.append(("S3b QM Signal", "✅ PASS" if found else "❌ FAIL", sig_detail))
+        if not found:
             return logs
 
-        # ── Stage 4: BOS/ChoCh ───────────────────────────────────────
-        # v23 (CLI v27 fix): dynamic fetch sized from oldest surviving signal ts.
-        # cfg["choch_limit"] is the minimum floor — restores the depth needed to
-        # catch "last before" ChoCh events (v26's +30-only floor was too shallow,
-        # causing valid signals to appear as WAIT in debug while live scan was VALID).
-        _choch_tf_ms  = 60_000 if choch_tf == "1m" else 300_000
-        _now_ms       = int(time.time() * 1000)
-        _oldest_ms    = min(sig_ts_list)
-        _bars_needed  = int((_now_ms - _oldest_ms) / _choch_tf_ms) + 30
-        _bars_needed  = max(_bars_needed, cfg["choch_limit"], BOS_LR * 2 + 5)
-        dc = await fetch(ex, sem, sym, choch_tf, _bars_needed)
-        choch_status = "wait"
-        if dc.empty or len(dc) < BOS_LR * 2 + 5:
-            logs.append((f"S4 BOS/ChoCh [{choch_tf.upper()}]", "⏳ WAIT",
-                f"Not enough {choch_tf} data (got {len(dc)}) — defaulting to WAIT"))
-        else:
-            events   = calc_bos_choch(dc, left=BOS_LR, right=BOS_LR)
-            RANK     = {"valid": 2, "wait": 1, "invalid": 0}
-            best_rank = -1
-            for sig_ts_ms in reversed(sig_ts_list):
-                choch_result = validate_choch(events, sig_ts_ms, want_sell)
-                rank = RANK[choch_result]
-                if rank > best_rank:
-                    best_rank    = rank
-                    choch_status = choch_result
-                if choch_status == "valid":
-                    break
+        # Show individual signals
+        for i, (sig_ts_ms, kind) in enumerate(zip(sig_ts_list, sig_kind_list), start=1):
+            tf_label = choch_tf if kind == "MTF QM" else sig_tf
+            si = min(int(np.searchsorted(ds.ts.values.astype(np.int64), sig_ts_ms, side="left")), len(ds) - 1)
+            logs.append((f"  Signal #{i}", "ℹ️ INFO",
+                f"[{kind}  {tf_label}]  ts={sig_ts_ms}  ({_age(sig_ts_ms)})  "
+                f"price={float(ds.close.iloc[si]):.8g}"))
 
-            status_label = {"valid": "✅ VALID", "wait": "⏳ WAIT", "invalid": "❌ INVALID"}[choch_status]
+        last_sig_ts    = sig_ts_list[-1]
+        sig_bar_idx    = min(int(np.searchsorted(ds.ts.values.astype(np.int64), last_sig_ts, side="left")), len(ds) - 1)
+        last_sig_price = float(ds.close.iloc[sig_bar_idx])
+        sig_times = _fmt_ts(last_sig_ts, tz_h, tz_label, time_fmt)
 
-            # ── Collect last-before and first-after events for detail ──
-            def _ev_str(ts_ev, ev_type, tz_h_=tz_h, tz_lbl=tz_label, tfmt=time_fmt):
-                ts_fmt = _fmt_ts(int(ts_ev), tz_h_, tz_lbl, tfmt)
-                icon = {"bull_choch": "🟢↑ChoCh", "bear_choch": "🔴↓ChoCh",
-                        "bull_bos":   "🟢↑BOS",   "bear_bos":   "🔴↓BOS"}.get(ev_type, ev_type)
-                return f"{icon} @ {ts_fmt}"
-
-            # Use the best (most-recent) signal ts for event context
-            best_sig_ts = max(sig_ts_list)
-            ev_before = [(ts, et) for ts, et in events if ts <  best_sig_ts]
-            ev_after  = [(ts, et) for ts, et in events if ts >= best_sig_ts]
-            last_bef_str  = _ev_str(*ev_before[-1]) if ev_before else "—"
-            first_aft_str = _ev_str(*ev_after[0])   if ev_after  else "—"
-
-            detail_msg = (
-                f"{len(events)} events on {choch_tf.upper()} | "
-                f"checked {len(sig_ts_list)} sig(s) | best: {choch_status.upper()} | "
-                f"last-before={last_bef_str} | first-after={first_aft_str}"
-            )
-            logs.append((f"S4 BOS/ChoCh [{choch_tf.upper()}]", status_label, detail_msg))
+        logs.append(("Signal Confirmed", "✅ VALID",
+            f"{direction} | {n_sigs} QM signal(s) on {sig_tf}/{choch_tf} | "
+            f"last: {sig_times} | price={last_sig_price:.8g}"))
 
         return logs
     finally:
@@ -3051,7 +3267,7 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     adxpk  = _re.search(r"ADX_peak=([\d.]+)",             det)
     adxend = _re.search(r"ADX_cur=([\d.]+)",              det)
     bb_m   = _re.search(r"(\w+)_CloudBS",               det)
-    sig_m  = _re.search(r"\[(\w+) FinalSig",              det)
+    sig_m  = _re.search(r"\[(\w+)_QM",                    det)
     sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
     sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
     age_h  = round((now_ms - pivot_ts) / 3_600_000, 1)
@@ -3100,7 +3316,7 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, tim
     # v21 FIX: prefer ADX_cur (current value) over ADX_peak (historical peak)
     adx    = _re.search(r"ADX_cur=([\d.]+)",   det) or _re.search(r"ADX_peak=([\d.]+)", det)
     bb_m   = _re.search(r"(\w+)_CloudBS",               det)
-    sig_m  = _re.search(r"\[(\w+) FinalSig",              det)
+    sig_m  = _re.search(r"\[(\w+)_QM",                    det)
     sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
     sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
     n_sigs = _re.search(r"\((\d+) sig",                   det)
@@ -3381,7 +3597,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v33</span>
+    <span class="sc-badge blue">&#128640; v37</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
@@ -3558,19 +3774,19 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             f"  <span class='tf-role'>RSI · Keltner</span>"
             f"</div>"
             f"<div class='sc-tf-node'>"
-            f"  <span class='tf-stage'>S3 · BB</span>"
+            f"  <span class='tf-stage'>S3a · CloudBS</span>"
             f"  <span class='tf-val'>{cfg['mid_tf'].upper()}</span>"
-            f"  <span class='tf-role'>BB pullback + KC</span>"
+            f"  <span class='tf-role'>Cloud BS gate</span>"
             f"</div>"
             f"<div class='sc-tf-node'>"
-            f"  <span class='tf-stage'>S3 · Signal</span>"
+            f"  <span class='tf-stage'>S3b · QM</span>"
             f"  <span class='tf-val'>{cfg['sig_tf'].upper()}</span>"
-            f"  <span class='tf-role'>Pine final sig</span>"
+            f"  <span class='tf-role'>Pressure → QM</span>"
             f"</div>"
             f"<div class='sc-tf-node'>"
-            f"  <span class='tf-stage'>S4 · ChoCh</span>"
+            f"  <span class='tf-stage'>S3b · MTF QM</span>"
             f"  <span class='tf-val'>{cfg['choch_tf'].upper()}</span>"
-            f"  <span class='tf-role'>BOS / ChoCh validate</span>"
+            f"  <span class='tf-role'>Lower-TF QM</span>"
             f"</div>"
             f"</div>",
             unsafe_allow_html=True)
@@ -3582,10 +3798,10 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             f"{cfg['pivot_tf'].upper()} Pivot <span class='pill-arr-v2'>&#8594;</span> ADX&gt;{ADX_TH:.0f}</span>"
             f"<span class='sc-pill-v2 s2'><span class='pill-num-v2'>S2</span>"
             f"TDI direction <span class='pill-arr-v2'>&#8594;</span> KC Band</span>"
-            f"<span class='sc-pill-v2 s3'><span class='pill-num-v2'>S3</span>"
-            f"{cfg['mid_tf'].upper()} CloudBS <span class='pill-arr-v2'>&#8594;</span> {cfg['sig_tf'].upper()} Pine Signal</span>"
-            f"<span class='sc-pill-v2 s4'><span class='pill-num-v2'>S4</span>"
-            f"{cfg['choch_tf'].upper()} BOS/ChoCh Validate</span>"
+            f"<span class='sc-pill-v2 s3'><span class='pill-num-v2'>S3a</span>"
+            f"{cfg['mid_tf'].upper()} CloudBS gate</span>"
+            f"<span class='sc-pill-v2 s4'><span class='pill-num-v2'>S3b</span>"
+            f"Pressure dot <span class='pill-arr-v2'>&#8594;</span> {cfg['sig_tf'].upper()}/{cfg['choch_tf'].upper()} QM</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
