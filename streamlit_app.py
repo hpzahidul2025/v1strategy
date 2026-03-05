@@ -267,6 +267,7 @@ nest_asyncio.apply()
 
 import numpy as np
 import pandas as pd
+import aiohttp
 import ccxt.async_support as ccxt_async
 
 # ══════════════════════════════════════════════════════════════════════
@@ -276,6 +277,20 @@ MAX_CONCURRENT   = 150
 RETRY_ATTEMPTS   = 3
 RETRY_BASE_DELAY = 0.5   # seconds; doubles each attempt
 UI_THROTTLE_S    = 0.25  # min seconds between progress UI refreshes
+
+# ── Direct Binance Futures klines endpoint (v38 ⚡ speed fix) ─────────────
+# Map ccxt-style TF strings → Binance API interval strings
+_TF_TO_BINANCE = {
+    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
+    "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M",
+}
+_FAPI_URL = "https://fapi.binance.com/fapi/v1/klines"
+
+# Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
+# Using a direct session bypasses all ccxt overhead (JSON schema validation,
+# market normalisation, rate-limit bookkeeping) for candle fetches.
+_http_session: aiohttp.ClientSession | None = None
 
 KC_LEN        = 20
 KC_MULT       = 2.0
@@ -2704,42 +2719,78 @@ def validate_choch(events, signal_ts_ms: int, want_sell: bool) -> str:
 #  ASYNC FETCH WITH RETRY
 # ══════════════════════════════════════════════════════════════════════
 
-async def fetch(ex, sem, sym: str, tf: str, limit: int) -> pd.DataFrame:
-    """Fetch OHLCV as DataFrame with retry on transient errors."""
+async def fetch_klines(sem, sym: str, tf: str, limit: int) -> np.ndarray | None:
+    """
+    v38 ⚡ Direct Binance Futures klines fetch — bypasses ccxt entirely.
+
+    Returns float64 ndarray shape (N, 6): [ts_ms, open, high, low, close, volume]
+    Returns None on error / empty response.
+
+    Converts ccxt symbol "BTC/USDT:USDT" → Binance symbol "BTCUSDT".
+    Uses module-level _http_session (set once per scan/debug) — zero session-creation
+    overhead per call, persistent TCP keep-alive across all concurrent fetches.
+
+    Binance returns each row as a mixed list [int, str, str, str, str, str, ...].
+    We slice cols 0-5 via np.array(..., dtype=object)[:, :6].astype(float) — one
+    vectorised cast, ~10x faster than the per-row float() loop.
+
+    Retries up to 3x on network errors or 429/5xx HTTP status codes.
+    """
+    global _http_session
+    # ccxt "BTC/USDT:USDT" → "BTCUSDT"
+    base_sym = sym.split(":")[0].replace("/", "")
+    interval = _TF_TO_BINANCE.get(tf, tf)
+    params   = {"symbol": base_sym, "interval": interval, "limit": limit}
+
     async with sem:
-        for attempt in range(RETRY_ATTEMPTS):
+        for _att in range(3):
             try:
-                raw = await ex.fetch_ohlcv(sym, tf, limit=limit)
-                if not raw:
-                    return pd.DataFrame()
-                arr = np.array(raw, dtype=float)
-                return pd.DataFrame({
-                    "ts":     arr[:, 0].astype(np.int64),
-                    "open":   arr[:, 1],
-                    "high":   arr[:, 2],
-                    "low":    arr[:, 3],
-                    "close":  arr[:, 4],
-                    "volume": arr[:, 5],
-                })
+                async with _http_session.get(_FAPI_URL, params=params) as resp:
+                    if resp.status == 429 or resp.status >= 500:
+                        await asyncio.sleep(1.0 * (_att + 1))
+                        continue
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json(content_type=None)
+                    if not data:
+                        return None
+                    # Vectorised parse: object array slice → float64 in one cast
+                    arr = np.array(data, dtype=object)[:, :6].astype(np.float64)
+                    return arr
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                if _att < 2:
+                    await asyncio.sleep(0.5 * (_att + 1))
             except Exception:
-                if attempt < RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                break
+        return None
+
+
+def _arr_to_df(arr: np.ndarray) -> pd.DataFrame:
+    """Convert fetch_klines ndarray → labelled DataFrame."""
+    return pd.DataFrame({
+        "ts":     arr[:, 0].astype(np.int64),
+        "open":   arr[:, 1],
+        "high":   arr[:, 2],
+        "low":    arr[:, 3],
+        "close":  arr[:, 4],
+        "volume": arr[:, 5],
+    })
+
+
+async def fetch(ex, sem, sym: str, tf: str, limit: int) -> pd.DataFrame:
+    """Fetch OHLCV as DataFrame — uses direct HTTP (v38 ⚡)."""
+    arr = await fetch_klines(sem, sym, tf, limit)
+    if arr is None or len(arr) == 0:
         return pd.DataFrame()
+    return _arr_to_df(arr)
 
 
 async def fetch_raw(ex, sem, sym: str, tf: str, limit: int) -> Optional[np.ndarray]:
-    """Fetch OHLCV as raw numpy array (skips DataFrame build) with retry."""
-    async with sem:
-        for attempt in range(RETRY_ATTEMPTS):
-            try:
-                raw = await ex.fetch_ohlcv(sym, tf, limit=limit)
-                if not raw or len(raw) < 5:
-                    return None
-                return np.array(raw, dtype=float)
-            except Exception:
-                if attempt < RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+    """Fetch OHLCV as raw numpy array — uses direct HTTP (v38 ⚡)."""
+    arr = await fetch_klines(sem, sym, tf, limit)
+    if arr is None or len(arr) < 5:
         return None
+    return arr
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2995,6 +3046,17 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
         ex.markets = st.session_state["markets"]
         ex.markets_by_id = {m["id"]: m for m in ex.markets.values()}
 
+    # v38 ⚡ Create shared aiohttp session for direct klines fetches.
+    # All concurrent fetch_klines() calls reuse this single session —
+    # zero per-call session overhead, persistent TCP keep-alive.
+    _scan_connector = aiohttp.TCPConnector(limit=200, keepalive_timeout=30, ttl_dns_cache=300)
+    _scan_session   = aiohttp.ClientSession(
+        connector=_scan_connector,
+        timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
+    )
+    global _http_session
+    _http_session = _scan_session
+
     try:
 
         symbols = sorted([
@@ -3051,6 +3113,10 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
         return state
     finally:
         await ex.close()
+        # v38 ⚡ close shared aiohttp session
+        if not _scan_session.closed:
+            await _scan_session.close()
+        await _scan_connector.close()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3072,10 +3138,22 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
 
     # v24: multi-proxy fallback — try each proxy until load_markets succeeds
     proxies = _get_all_proxies()
+    # v38 ⚡ debug mode creates its own aiohttp session so fetch_klines() works.
+    # (In scan mode, run_scan creates the session; debug runs standalone.)
+    _dbg_connector = aiohttp.TCPConnector(limit=20, keepalive_timeout=30, ttl_dns_cache=300)
+    _dbg_session   = aiohttp.ClientSession(
+        connector=_dbg_connector,
+        timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
+    )
+    global _http_session
+    _http_session = _dbg_session
+
     try:
         ex, active_proxy, proxy_idx = await _try_load_markets(proxies)
     except RuntimeError as _proxy_err:
         logs.append(("Proxy", "❌ FAIL", str(_proxy_err)))
+        if not _dbg_session.closed: await _dbg_session.close()
+        await _dbg_connector.close()
         return logs
     try:
         if sym not in ex.markets:
@@ -3334,6 +3412,10 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         return logs
     finally:
         await ex.close()
+        # v38 ⚡ close debug aiohttp session
+        if not _dbg_session.closed:
+            await _dbg_session.close()
+        await _dbg_connector.close()
 
 
 # ══════════════════════════════════════════════════════════════════════
