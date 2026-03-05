@@ -2177,9 +2177,17 @@ def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
     sig_kind_list: list = []
 
     for i in range(win_start, min(win_end, n - 1)):
+        # TSL direction flip → reset latch AND purge all collected signals.
+        # Signals formed before a wrong-direction flip are invalidated.
         if i > 0 and dir_main[i] != dir_main[i - 1]:
-            if want_sell     and dir_main[i] > 0: had_pressure = False
-            if not want_sell and dir_main[i] < 0: had_pressure = False
+            if want_sell and dir_main[i] > 0:
+                had_pressure = False
+                sig_ts_list.clear()
+                sig_kind_list.clear()
+            if not want_sell and dir_main[i] < 0:
+                had_pressure = False
+                sig_ts_list.clear()
+                sig_kind_list.clear()
         if pressure[i]:
             had_pressure = True
         if had_pressure and qm_sig_filtered[i]:
