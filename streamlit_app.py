@@ -3190,10 +3190,22 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
 
         # ── Stage 3a: Cloud BS pullback gate (mid_tf) ────────────────
         is_5m_mode = sig_tf == "5m"
-        sig_limit  = 165 if is_5m_mode else 270   # v34 FIX: bumped safety margin
-        mid_limit  =  80 if is_5m_mode else 95    # v34 FIX: Bayes warmup + full pivot window
-        ltf_limit  = cfg["choch_limit"]           # v34 FIX: was hardcoded 200 → use cfg
-        min_sig    =  80
+
+        # v38: dynamic bar limits based on actual pivot age (matches stage3_worker)
+        _WARMUP   = 60
+        _API_CAP  = 1500
+        _tf_ms_d = {
+            "1m":  60_000,   "3m":  180_000,  "5m":   300_000,
+            "15m": 900_000,  "30m": 1_800_000, "1h":  3_600_000,
+            "4h":  14_400_000, "1d": 86_400_000,
+        }
+        _pivot_span_ms_d = pivot_end_ts - pivot_win_ts
+        sig_limit  = min(_API_CAP, int(_pivot_span_ms_d / _tf_ms_d.get(sig_tf,   900_000)) + _WARMUP + 10)
+        mid_limit  = min(_API_CAP, int(_pivot_span_ms_d / _tf_ms_d.get(mid_tf,   3_600_000)) + _WARMUP + 10)
+        _span_bars_d = int(_pivot_span_ms_d / _tf_ms_d.get(choch_tf, 300_000)) + 1
+        _floor_d     = BOS_LR * 2 + 30
+        ltf_limit    = max(_floor_d, min(_span_bars_d + _floor_d, cfg["choch_limit"]))
+        min_sig      = min(sig_limit, 80)
 
         # v38 FIX: age gate uses cfg["pivot_max_age_ms"] (48h/15M, 8h/5M)
         pivot_max_age_ms = cfg["pivot_max_age_ms"]
@@ -3279,6 +3291,41 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         sig_bar_idx    = min(int(np.searchsorted(ds.ts.values.astype(np.int64), last_sig_ts, side="left")), len(ds) - 1)
         last_sig_price = float(ds.close.iloc[sig_bar_idx])
         sig_times = _fmt_ts(last_sig_ts, tz_h, tz_label, time_fmt)
+
+        # ── Stage 3b exit validation (v38 FIX) ───────────────────────
+        # (a) TSL flip check — has dirMain on sig_tf flipped against direction?
+        _tsl_dbg, _dir_dbg = f_swing(ds.high.values, ds.low.values, ds.close.values, SWING_UTAMA)
+        dir_now_dbg  = int(_dir_dbg[-2])   # last closed bar
+        exp_dir_dbg  = -1 if want_sell else 1
+        tsl_ok_dbg   = (dir_now_dbg == exp_dir_dbg)
+        dir_str      = "bear (-1)" if dir_now_dbg == -1 else "bull (+1)"
+        logs.append(("S3b TSL Check", "✅ PASS" if tsl_ok_dbg else "❌ FAIL",
+            f"sig_tf dirMain={dir_str} | need {'bear (-1)' if want_sell else 'bull (+1)'} | "
+            f"{'OK — trend intact' if tsl_ok_dbg else 'FLIPPED — trend reversed since signal'}"))
+        if not tsl_ok_dbg:
+            return logs
+
+        # (b) KC clean check — tdi_tf (da), anchor = oldest signal (sig_ts_list[0])
+        _h_t = da.high.values;  _l_t = da.low.values;  _c_t = da.close.values
+        _u_tdi, _l_tdi  = calc_kc(_h_t, _l_t, _c_t)
+        _ts_tdi         = da.ts.values.astype(np.int64)
+        kc_anchor_ts    = sig_ts_list[0]   # oldest signal in window (v38 FIX: was last)
+        kc_anchor_idx   = int(np.searchsorted(_ts_tdi, kc_anchor_ts, side="left"))
+        _c_range        = _c_t[kc_anchor_idx:-1]
+        _u_range        = _u_tdi[kc_anchor_idx:-1]
+        _l_range        = _l_tdi[kc_anchor_idx:-1]
+        if want_sell:
+            kc_clean_dbg = bool(np.all(_c_range > _l_range))
+        else:
+            kc_clean_dbg = bool(np.all(_c_range < _u_range))
+        kc_anchor_age = (int(time.time() * 1000) - kc_anchor_ts) / 3_600_000
+        n_checked     = max(len(_c_range), 0)
+        logs.append(("S3b KC Clean", "✅ PASS" if kc_clean_dbg else "❌ FAIL",
+            f"tdi_tf KC check from first_sig ({kc_anchor_age:.1f}h ago) → now | "
+            f"{n_checked} {tdi_tf} bars | "
+            f"{'no breach — price stayed inside KC' if kc_clean_dbg else 'KC BREACHED — price crossed band since first signal'}"))
+        if not kc_clean_dbg:
+            return logs
 
         logs.append(("Signal Confirmed", "✅ VALID",
             f"{direction} | {n_sigs} QM signal(s) on {sig_tf}/{choch_tf} | "
