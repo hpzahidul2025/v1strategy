@@ -291,6 +291,7 @@ _FAPI_URL = "https://fapi.binance.com/fapi/v1/klines"
 # Using a direct session bypasses all ccxt overhead (JSON schema validation,
 # market normalisation, rate-limit bookkeeping) for candle fetches.
 _http_session: aiohttp.ClientSession | None = None
+_http_proxy:   str | None = None   # proxy URL for direct klines fetches
 
 KC_LEN        = 20
 KC_MULT       = 2.0
@@ -2745,7 +2746,7 @@ async def fetch_klines(sem, sym: str, tf: str, limit: int) -> np.ndarray | None:
     async with sem:
         for _att in range(3):
             try:
-                async with _http_session.get(_FAPI_URL, params=params) as resp:
+                async with _http_session.get(_FAPI_URL, params=params, proxy=_http_proxy) as resp:
                     if resp.status == 429 or resp.status >= 500:
                         await asyncio.sleep(1.0 * (_att + 1))
                         continue
@@ -3054,8 +3055,9 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
         connector=_scan_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
     )
-    global _http_session
+    global _http_session, _http_proxy
     _http_session = _scan_session
+    _http_proxy   = active_proxy if active_proxy else None
 
     try:
 
@@ -3145,7 +3147,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         connector=_dbg_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
     )
-    global _http_session
+    global _http_session, _http_proxy
     _http_session = _dbg_session
 
     try:
@@ -3159,6 +3161,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         if sym not in ex.markets:
             logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Binance Futures"))
             return logs
+        _http_proxy = active_proxy if active_proxy else None
         logs.append(("Proxy", "✅ PASS",
             f"Connected via proxy slot {proxy_idx + 1} ({_proxy_label(active_proxy)})"))
 
