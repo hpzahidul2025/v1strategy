@@ -2809,14 +2809,17 @@ async def fetch_raw(ex, sem, sym: str, tf: str, limit: int) -> Optional[np.ndarr
 async def stage1_worker(ex, sem, sym: str, cfg: dict):
     """
     Stage 1: Pivot pattern detection + ADX momentum filter.
-    v34 fixes: pivot_ts/pivot_win_ts/pivot_confirmed_ts anchoring,
-               age gate uses pivot_confirmed_ts, ADX window pp_P→cur_P_close.
+    v38 ⚡ pivot_tf and tdi_tf fetched concurrently.
     Returns (want_sell, sym, detail_str, pivot_ts, pivot_win_ts, pivot_end_ts, tdi_df) or None.
     """
     pivot_tf = cfg["pivot_tf"]
     tdi_tf   = cfg["tdi_tf"]
 
-    arr_p = await fetch_raw(ex, sem, sym, pivot_tf, 7)
+    # ⚡ Concurrent fetch — pivot_tf and tdi_tf in parallel
+    arr_p, da = await asyncio.gather(
+        fetch_raw(ex, sem, sym, pivot_tf, 7),
+        fetch    (ex, sem, sym, tdi_tf,   80),
+    )
     if arr_p is None or len(arr_p) < 6:
         return None
 
@@ -2834,13 +2837,11 @@ async def stage1_worker(ex, sem, sym: str, cfg: dict):
     elif cur_P > prev_P and prev_P < min(pp_P, ppp_P): want_sell = False
     else: return None
 
-    # v34 FIX: age measured from pivot_confirmed_ts (not pivot_ts)
-    is_5m_s1 = tdi_tf == "1h"
-    max_age  = (8 * 3600 * 1000) if is_5m_s1 else (48 * 3600 * 1000)
-    if int(time.time() * 1000) - pivot_confirmed_ts > max_age:
+    # v38 FIX: pivot age gate — use per-mode threshold from cfg (48h/15M, 8h/5M)
+    pivot_max_age_ms = cfg["pivot_max_age_ms"]
+    if int(time.time() * 1000) - pivot_confirmed_ts > pivot_max_age_ms:
         return None
 
-    da = await fetch(ex, sem, sym, tdi_tf, 80)
     if da.empty or len(da) < ADX_LEN * 2:
         return None
 
