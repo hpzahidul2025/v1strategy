@@ -1,6 +1,14 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v37
+Binance Futures Scanner - ULTRA-FAST Edition v39
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v39 FIX: Pressure dot now gates on dir_main (Pine's authoritative dirMain)
+  instead of above_tsl/below_tsl (price vs tsl_main).
+  At turning-point bars these diverge: dir_main can be +1 (bullish) while
+  close < tsl_main is still true, producing a SELL dot inside a bullish TSL
+  run — the source of false signals reported in v38.
+  SELL pressure: wt2 > 80 AND dir_main < 0
+  BUY  pressure: wt2 < 20 AND dir_main > 0
 
 v36 UPDATES over v35 (aligned with CLI v28):
   FEAT: Stage 3 mid-TF gate replaced — BB+KC range gate removed; replaced by
@@ -407,7 +415,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v37",
+    page_title="Binance Futures Scanner v39",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -2144,8 +2152,11 @@ def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
     above_tsl = c > tsl_main; below_tsl = c < tsl_main
     wt2 = calc_wt2(h, l, c, v)
 
-    if want_sell: raw_p = (wt2 > 80) & below_tsl
-    else:         raw_p = (wt2 < 20) & above_tsl
+    # v39 FIX: gate on dir_main (Pine's authoritative dirMain) not above/below_tsl.
+    # At turning-point bars dir_main and price-vs-tsl diverge — a SELL dot could fire
+    # on a bar where dir_main just flipped bullish, producing false signals.
+    if want_sell: raw_p = (wt2 > 80) & (dir_main < 0)
+    else:         raw_p = (wt2 < 20) & (dir_main > 0)
     pressure = np.zeros(n, bool)
     pressure[1:] = raw_p[1:] & ~raw_p[:-1]
 
@@ -3810,7 +3821,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v37</span>
+    <span class="sc-badge blue">&#128640; v39</span>
     <span class="sc-badge green">&#10004; 4 Stages</span>
     <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
