@@ -2,15 +2,21 @@
 Binance Futures Scanner - ULTRA-FAST Edition v39
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v39 FIX: Stage 2 TDI — live forming bar excluded from tdi_state() input.
-  stage2_worker and debug_single both passed da.close.values (all bars
-  including the live/forming bar) to tdi_state(). The CLI version correctly
-  passes da.close.values[:-1]. The incomplete close of the forming bar
-  skews the RSI → fast SMA → TDI direction, causing false bear/bull results
-  (e.g. bear=False bull=True on a SELL signal when CLI shows bear=True).
-  Fix: both paths now pass da.close.values[:-1] — matches CLI exactly.
-  Also fixed: c_t for KC band check changed from iloc[-1] (live bar) to
-  iloc[-2] (last confirmed closed bar) — matches CLI stage2_worker.
+v39 FIX (3 bugs — aligned with CLI v39):
+  FIX 1: Pressure dot gates on dir_main instead of above/below_tsl.
+          At turning-point bars dir_main (Pine's authoritative dirMain)
+          and price-vs-tsl diverge: dir_main can be +1 (bullish) while
+          close < tsl_main, producing a SELL dot inside a bullish TSL run.
+          SELL: wt2 > 80 AND dir_main < 0
+          BUY:  wt2 < 20 AND dir_main > 0
+  FIX 2: stage2_worker — tdi_state() now receives da.close.values[:-1]
+          (excludes live forming bar). Previously passed all bars including
+          the forming candle whose mid-tick close skews RSI → fast SMA,
+          flipping TDI direction vs the CLI (bear=False when CLI=True).
+          c_t for KC band check changed from iloc[-1] (live) to iloc[-2]
+          (last confirmed closed bar) — matches CLI stage2_worker exactly.
+  FIX 3: debug_single Stage 2 — same two fixes as stage2_worker applied
+          to the debug path so it shows the correct bear/bull result.
 
 v36 UPDATES over v35 (aligned with CLI v28):
   FEAT: Stage 3 mid-TF gate replaced — BB+KC range gate removed; replaced by
@@ -2154,8 +2160,11 @@ def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
     above_tsl = c > tsl_main; below_tsl = c < tsl_main
     wt2 = calc_wt2(h, l, c, v)
 
-    if want_sell: raw_p = (wt2 > 80) & below_tsl
-    else:         raw_p = (wt2 < 20) & above_tsl
+    # v39 FIX: gate on dir_main not above/below_tsl — at turning-point bars
+    # dir_main can be +1 (bullish) while close < tsl_main, producing a SELL
+    # dot inside a bullish TSL run.  dir_main is Pine's authoritative dirMain.
+    if want_sell: raw_p = (wt2 > 80) & (dir_main < 0)
+    else:         raw_p = (wt2 < 20) & (dir_main > 0)
     pressure = np.zeros(n, bool)
     pressure[1:] = raw_p[1:] & ~raw_p[:-1]
 
