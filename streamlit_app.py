@@ -2,13 +2,15 @@
 Binance Futures Scanner - ULTRA-FAST Edition v39
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v39 FIX: Pressure dot now gates on dir_main (Pine's authoritative dirMain)
-  instead of above_tsl/below_tsl (price vs tsl_main).
-  At turning-point bars these diverge: dir_main can be +1 (bullish) while
-  close < tsl_main is still true, producing a SELL dot inside a bullish TSL
-  run — the source of false signals reported in v38.
-  SELL pressure: wt2 > 80 AND dir_main < 0
-  BUY  pressure: wt2 < 20 AND dir_main > 0
+v39 FIX: Stage 2 TDI — live forming bar excluded from tdi_state() input.
+  stage2_worker and debug_single both passed da.close.values (all bars
+  including the live/forming bar) to tdi_state(). The CLI version correctly
+  passes da.close.values[:-1]. The incomplete close of the forming bar
+  skews the RSI → fast SMA → TDI direction, causing false bear/bull results
+  (e.g. bear=False bull=True on a SELL signal when CLI shows bear=True).
+  Fix: both paths now pass da.close.values[:-1] — matches CLI exactly.
+  Also fixed: c_t for KC band check changed from iloc[-1] (live bar) to
+  iloc[-2] (last confirmed closed bar) — matches CLI stage2_worker.
 
 v36 UPDATES over v35 (aligned with CLI v28):
   FEAT: Stage 3 mid-TF gate replaced — BB+KC range gate removed; replaced by
@@ -2152,11 +2154,8 @@ def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
     above_tsl = c > tsl_main; below_tsl = c < tsl_main
     wt2 = calc_wt2(h, l, c, v)
 
-    # v39 FIX: gate on dir_main (Pine's authoritative dirMain) not above/below_tsl.
-    # At turning-point bars dir_main and price-vs-tsl diverge — a SELL dot could fire
-    # on a bar where dir_main just flipped bullish, producing false signals.
-    if want_sell: raw_p = (wt2 > 80) & (dir_main < 0)
-    else:         raw_p = (wt2 < 20) & (dir_main > 0)
+    if want_sell: raw_p = (wt2 > 80) & below_tsl
+    else:         raw_p = (wt2 < 20) & above_tsl
     pressure = np.zeros(n, bool)
     pressure[1:] = raw_p[1:] & ~raw_p[:-1]
 
@@ -2888,9 +2887,9 @@ def stage2_worker(want_sell: bool, sym: str, detail: str, pivot_ts: int,
     """
     if da.empty or len(da) < 60:
         return None
-    bear_tdi, bull_tdi = tdi_state(da.close.values)
+    bear_tdi, bull_tdi = tdi_state(da.close.values[:-1])   # exclude live forming bar
     u_t, l_t           = calc_kc(da.high.values, da.low.values, da.close.values)
-    c_t                = float(da.close.iloc[-1])
+    c_t                = float(da.close.iloc[-2])           # last confirmed closed bar
     n_t = len(da); s15 = max(0, n_t - 16); e15 = n_t - 1
     if want_sell:
         if bear_tdi and c_t > l_t[-1] and bool(np.all(da.low.values[s15:e15] > l_t[s15:e15])):
@@ -3267,9 +3266,9 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
 
         # ── Stage 2 ──────────────────────────────────────────────────
         want_sell   = direction == "SELL"
-        bear_tdi, bull_tdi = tdi_state(da.close.values)
+        bear_tdi, bull_tdi = tdi_state(da.close.values[:-1])   # exclude live forming bar
         u_t, l_t    = calc_kc(da.high.values, da.low.values, da.close.values)
-        c_t         = float(da.close.iloc[-1])
+        c_t         = float(da.close.iloc[-2])           # last confirmed closed bar
         n_t = len(da); s15 = max(0, n_t - 16); e15 = n_t - 1
 
         tdi_ok  = (want_sell and bear_tdi) or (not want_sell and bull_tdi)
