@@ -2913,17 +2913,16 @@ async def fetch_raw(ex, sem, sym: str, tf: str, limit: int) -> Optional[np.ndarr
 async def stage1_worker(ex, sem, sym: str, cfg: dict):
     """
     Stage 1: Pivot pattern detection + ADX momentum filter.
-    v38 ⚡ pivot_tf and tdi_tf fetched concurrently.
+    v44 ⚡ BANDWIDTH FIX: pivot_tf fetched first (7 bars); tdi_tf (80 bars) only
+    fetched after the pivot pattern + age gate pass — avoids downloading 80 bars
+    of tdi_tf for the ~95%+ of symbols that fail the pivot check immediately.
     Returns (want_sell, sym, detail_str, pivot_ts, pivot_win_ts, pivot_end_ts, tdi_df) or None.
     """
     pivot_tf = cfg["pivot_tf"]
     tdi_tf   = cfg["tdi_tf"]
 
-    # ⚡ Concurrent fetch — pivot_tf and tdi_tf in parallel
-    arr_p, da = await asyncio.gather(
-        fetch_raw(ex, sem, sym, pivot_tf, 7),
-        fetch    (ex, sem, sym, tdi_tf,   80),
-    )
+    # ⚡ Step 1: fetch only the 7-bar pivot candles (tiny — ~560 bytes per symbol)
+    arr_p = await fetch_raw(ex, sem, sym, pivot_tf, 7)
     if arr_p is None or len(arr_p) < 6:
         return None
 
@@ -2937,14 +2936,19 @@ async def stage1_worker(ex, sem, sym: str, cfg: dict):
     cur_P  = _hlc3(arr_p[-2]);  prev_P = _hlc3(arr_p[-3])
     pp_P   = _hlc3(arr_p[-4]);  ppp_P  = _hlc3(arr_p[-5])
 
+    # ⚡ Pivot pattern check BEFORE fetching tdi_tf — eliminates ~95% of symbols here
     if   cur_P < prev_P and prev_P > max(pp_P, ppp_P): want_sell = True
     elif cur_P > prev_P and prev_P < min(pp_P, ppp_P): want_sell = False
     else: return None
 
     # v38 FIX: pivot age gate — use per-mode threshold from cfg (48h/15M, 8h/5M)
+    # ⚡ Age gate also runs before tdi_tf fetch — avoids fetch for stale pivots
     pivot_max_age_ms = cfg["pivot_max_age_ms"]
     if int(time.time() * 1000) - pivot_confirmed_ts > pivot_max_age_ms:
         return None
+
+    # ⚡ Step 2: pivot + age gate passed — NOW fetch the 80-bar tdi_tf (only for survivors)
+    da = await fetch(ex, sem, sym, tdi_tf, 80)
 
     if da.empty or len(da) < ADX_LEN * 2:
         return None
@@ -3041,14 +3045,12 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     _floor     = BOS_LR * 2 + 30
     ltf_limit  = max(_floor, min(_span_bars + _floor, cfg["choch_limit"]))
 
-    # ⚡ Concurrent 3-way fetch — all three TFs in one gather (v38 speedup)
-    dm, ds, dl = await asyncio.gather(
-        fetch(ex, sem, sym, mid_tf,   mid_limit),
-        fetch(ex, sem, sym, sig_tf,   sig_limit),
-        fetch(ex, sem, sym, choch_tf, ltf_limit),
-    )
-
     # ── Stage 3a: Cloud BS pullback gate (mid_tf) ─────────────────────────
+    # ⚡ v44 BANDWIDTH FIX: fetch mid_tf alone first — Cloud BS is a cheap pass/fail.
+    # sig_tf and choch_tf (the heavy fetches — up to 650 bars of 1m/5m data) are only
+    # fetched AFTER Cloud BS passes.  Symbols failing 3a pay zero cost for 3b data.
+    dm = await fetch(ex, sem, sym, mid_tf, mid_limit)
+
     if dm.empty or len(dm) < max(BB_LEN, 20) + 10:
         return None
 
@@ -3069,6 +3071,12 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
         return None
 
     # ── Stage 3b: QM pressure gate ────────────────────────────────────────
+    # ⚡ Cloud BS passed — now fetch sig_tf + choch_tf concurrently (only survivors reach here)
+    ds, dl = await asyncio.gather(
+        fetch(ex, sem, sym, sig_tf,   sig_limit),
+        fetch(ex, sem, sym, choch_tf, ltf_limit),
+    )
+
     if ds.empty or len(ds) < min_sig:
         return None
 
