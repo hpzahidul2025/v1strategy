@@ -1,5 +1,5 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v46
+Binance Futures Scanner - ULTRA-FAST Edition v48
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
 v46 WARMUP FIX (KWV indicator convergence):
@@ -475,7 +475,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v46",
+    page_title="Binance Futures Scanner v48",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -2105,7 +2105,20 @@ def calc_kwv_windows(h: np.ndarray, l: np.ndarray, c: np.ndarray,
                      v: np.ndarray, dir_main: np.ndarray) -> tuple:
     """
     KWV state machines — Pine Script exact replica.
-    Returns (kwv_bull_win, kwv_bear_win) — bool arrays parallel to input.
+
+    BUY  window:
+      R1: kvo>0 & mfi>MFI_OB  → bStep=1
+      R2: kvo<0 & mfi<MFI_OS  → bStep=2  (window OPENS)
+      R3: kvo>0 & green wave   → fires, bullR3Fired=True, window stays open
+      CLOSE : next new green wave after R3 fired
+      FORCE : dir_main != +1
+
+    SELL window (symmetric).
+
+    Returns (kwv_bull_win, kwv_bear_win, kwv_bull_sig, kwv_bear_sig):
+      kwv_bull_win / kwv_bear_win — True from R2 onward (window open, for display).
+      kwv_bull_sig / kwv_bear_sig — True only after R3 fires within the open window
+                                    (used as the signal-collection gate).
     """
     n = len(c)
     kvo  = calc_kvo(h, l, c, v)
@@ -2118,38 +2131,54 @@ def calc_kwv_windows(h: np.ndarray, l: np.ndarray, c: np.ndarray,
     new_red   = (wave == -1) & (wave_prev != -1)
     kwv_bull_win = np.zeros(n, bool)
     kwv_bear_win = np.zeros(n, bool)
+    # v47: separate signal-gate arrays — only True after R3 fires
+    kwv_bull_sig = np.zeros(n, bool)
+    kwv_bear_sig = np.zeros(n, bool)
     s_step = 0;  b_step = 0
     kwv_bull = False;  kwv_bear = False
     bull_r3  = False;  bear_r3  = False
     for i in range(n):
         sell_fired = False; buy_fired  = False
+        # ── SELL state machine (dir == -1) ──────────────────────────────
         if dir_main[i] == -1:
             if s_step == 0:
                 if kvo_below[i] and mfi[i] < MFI_OS: s_step = 1
             elif s_step == 1:
                 if kvo_above[i] and mfi[i] > MFI_OB: s_step = 2
             elif s_step == 2:
-                if kvo_below[i] and red_bar[i]: sell_fired = True; bear_r3 = True; s_step = 0
+                if kvo_below[i] and red_bar[i]:
+                    sell_fired = True; bear_r3 = True   # R3 fired — signal gate opens
+                    s_step = 0
         else:
             s_step = 0; bear_r3 = False
+        # ── BUY state machine (dir == 1) ─────────────────────────────────
         if dir_main[i] == 1:
             if b_step == 0:
                 if kvo_above[i] and mfi[i] > MFI_OB: b_step = 1
             elif b_step == 1:
                 if kvo_below[i] and mfi[i] < MFI_OS: b_step = 2
             elif b_step == 2:
-                if kvo_above[i] and green_bar[i]: buy_fired = True; bull_r3 = True; b_step = 0
+                if kvo_above[i] and green_bar[i]:
+                    buy_fired = True; bull_r3 = True    # R3 fired — signal gate opens
+                    b_step = 0
         else:
             b_step = 0; bull_r3 = False
+        # ── Open window at R2 (display only) ──────────────────────────────
         if b_step == 2: kwv_bull = True
         if s_step == 2: kwv_bear = True
+        # ── Close BULL: next new green wave after R3 ──────────────────────
         if kwv_bull and bull_r3 and not buy_fired  and new_green[i]: kwv_bull = False; bull_r3 = False
+        # ── Close BEAR: next new red wave after R3 ────────────────────────
         if kwv_bear and bear_r3 and not sell_fired and new_red[i]:   kwv_bear = False; bear_r3 = False
+        # ── Force-close ───────────────────────────────────────────────────
         if dir_main[i] != 1:  kwv_bull = False; bull_r3 = False
         if dir_main[i] != -1: kwv_bear = False; bear_r3 = False
         kwv_bull_win[i] = kwv_bull
         kwv_bear_win[i] = kwv_bear
-    return kwv_bull_win, kwv_bear_win
+        # v47: signal gate = window open AND R3 has fired
+        kwv_bull_sig[i] = kwv_bull and bull_r3
+        kwv_bear_sig[i] = kwv_bear and bear_r3
+    return kwv_bull_win, kwv_bear_win, kwv_bull_sig, kwv_bear_sig
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2276,26 +2305,18 @@ def _calc_qm_strat2(h: np.ndarray, l: np.ndarray, c: np.ndarray, pp: int = 5):
             hb_eff = hb; lb_eff = lb
 
         if hb_eff and lb_eff:
-            if len(a_type) > 0:
-                lt = a_type[-1]; lval = a_val[-1]
-                is_ll = lt in ("L", "LL"); is_hh = lt in ("H", "HH")
-                is_lh = lt == "LH";        is_hl = lt == "HL"
-                if is_ll:
-                    if float(piv_l[i]) < lval: pop_last(); push_low(i)
-                    else: push_high(i)
-                elif is_hh:
-                    if float(piv_h[i]) > lval: pop_last(); push_high(i)
-                    else: push_low(i)
-                elif is_lh:
-                    if float(piv_h[i]) < lval: push_low(i)
-                    elif float(piv_h[i]) > lval:
-                        if c[i] < lval: pop_last(); push_high(i)
-                        elif c[i] > lval: push_low(i)
-                elif is_hl:
-                    if float(piv_l[i]) > lval: push_high(i)
-                    elif float(piv_l[i]) < lval:
-                        if c[i] > lval: pop_last(); push_low(i)
-                        elif c[i] < lval: push_high(i)
+            # Pine f_piv_bull/f_piv_bear both-fire exact replica:
+            #   empty  → push H
+            #   last Low-type  (L / LL / HL) → push High unconditionally
+            #   last High-type (H / HH / LH) → push Low  unconditionally
+            if len(a_type) == 0:
+                a_type.append("H"); a_val.append(float(hv)); a_idx.append(int(hi_))
+            else:
+                lt = a_type[-1]
+                if lt in ("L", "LL", "HL"):
+                    push_high(i)
+                elif lt in ("H", "HH", "LH"):
+                    push_low(i)
         elif hb_eff:
             if len(a_type) == 0:
                 a_type.append("H"); a_val.append(float(hv)); a_idx.append(int(hi_))
@@ -2341,15 +2362,18 @@ def signals_kwv_qm(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
                    zz_len: int = 5, s2_pp: int = 5,
                    ltf_zz_len=None, ltf_s2_pp=None):
     """
-    v44: Pine Script QM + KWV Window Filter exact replica.
-    Replaces pressure-dot latch with the KWV 3-rule state machine window.
+    v48: Pine Script QM + KWV Window Filter exact replica.
 
-    Window gate (replaces pressure dot + latch):
-      BUY  allowed while kwvBullWindow open AND dir_main == +1
-      SELL allowed while kwvBearWindow open AND dir_main == -1
+    v47 FIX: bull_allow/bear_allow now use kwv_bull_sig/kwv_bear_sig (R3-gated)
+    instead of kwv_bull_win/kwv_bear_win (R2-opened). QM signals are only valid
+    AFTER R3 fires within the open window.
 
-    v45: one signal per KWV window cycle.
-    Returns (found: bool, sig_ts_list: list[int], sig_kind_list: list[str])
+    v48: Also returns waiting signals — QMs that fired while window was open (R2)
+    but R3 had not yet fired.
+
+    Returns 6-tuple:
+      (found, sig_ts_list, sig_kind_list,
+       wait_found, wait_ts_list, wait_kind_list)
     """
     h  = ds_sig.high.values;  l  = ds_sig.low.values
     c  = ds_sig.close.values; v  = ds_sig.volume.values
@@ -2359,19 +2383,25 @@ def signals_kwv_qm(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
     tsl_main, dir_main = f_swing(h, l, c, SWING_UTAMA)
     above_tsl = c > tsl_main; below_tsl = c < tsl_main
 
-    # KWV windows — replace pressure dot + latch
-    kwv_bull_win, kwv_bear_win = calc_kwv_windows(h, l, c, v, dir_main)
+    # v47: 4-array return — *_sig are R3-gated, *_win open at R2 (for wait tracking)
+    kwv_bull_win, kwv_bear_win, kwv_bull_sig, kwv_bear_sig = calc_kwv_windows(h, l, c, v, dir_main)
 
-    # Combined gate: TSL direction + KWV window
-    bull_allow = (dir_main == 1)  & kwv_bull_win
-    bear_allow = (dir_main == -1) & kwv_bear_win
+    # Signal gate uses R3-gated arrays (*_sig)
+    bull_allow = (dir_main == 1)  & kwv_bull_sig
+    bear_allow = (dir_main == -1) & kwv_bear_sig
     allow      = bear_allow if want_sell else bull_allow
+
+    # Wait gate: window open at R2 but R3 not yet fired
+    kwv_win_side = kwv_bear_win if want_sell else kwv_bull_win
+    kwv_sig_side = kwv_bear_sig if want_sell else kwv_bull_sig
+    wait_gate    = (dir_main == (-1 if want_sell else 1)) & kwv_win_side & ~kwv_sig_side
 
     s1_bull, s1_bear = _calc_qm_strat1(h, l, c, zz_len=zz_len)
     s2_bull, s2_bear = _calc_qm_strat2(h, l, c, pp=s2_pp)
     qm_bull = s1_bull | s2_bull; qm_bear = s1_bear | s2_bear
     qm_sig  = qm_bear if want_sell else qm_bull
-    qm_sig_filtered = qm_sig & allow & (below_tsl if want_sell else above_tsl)
+    qm_sig_filtered  = qm_sig & allow    & (below_tsl if want_sell else above_tsl)
+    qm_wait_filtered = qm_sig & wait_gate & (below_tsl if want_sell else above_tsl)
 
     ltf_bull_qm = np.empty(0, bool); ltf_bear_qm = np.empty(0, bool)
     ltf_ts      = np.empty(0, dtype=np.int64)
@@ -2392,33 +2422,45 @@ def signals_kwv_qm(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
 
     sig_ts_list:   list = []
     sig_kind_list: list = []
+    wait_ts_list:  list = []
+    wait_kind_list: list = []
 
-    # v45: one signal per KWV window cycle.
     signal_fired_this_window = False
+    wait_fired_this_window   = False
     prev_allow = bool(allow[win_start - 1]) if win_start > 0 else False
+    prev_wait  = bool(wait_gate[win_start - 1]) if win_start > 0 else False
 
     for i in range(win_start, min(win_end, n - 1)):
         # TSL direction flip → purge all signals
         if i > 0 and dir_main[i] != dir_main[i - 1]:
             if want_sell and dir_main[i] > 0:
                 sig_ts_list.clear(); sig_kind_list.clear()
+                wait_ts_list.clear(); wait_kind_list.clear()
                 signal_fired_this_window = False
+                wait_fired_this_window   = False
             if not want_sell and dir_main[i] < 0:
                 sig_ts_list.clear(); sig_kind_list.clear()
+                wait_ts_list.clear(); wait_kind_list.clear()
                 signal_fired_this_window = False
+                wait_fired_this_window   = False
 
-        # Detect rising edge of allow → new window cycle opens
+        # Rising edge of confirmed allow → new R3-confirmed cycle
         cur_allow = bool(allow[i])
         if cur_allow and not prev_allow:
             signal_fired_this_window = False
         prev_allow = cur_allow
 
-        # Chart-TF QM fires inside KWV window — only the FIRST per window cycle
+        # Rising edge of wait gate → new pre-R3 window cycle
+        cur_wait = bool(wait_gate[i])
+        if cur_wait and not prev_wait:
+            wait_fired_this_window = False
+        prev_wait = cur_wait
+
+        # ── Confirmed signals (R3 passed) ────────────────────────────────
         if qm_sig_filtered[i] and not signal_fired_this_window:
             sig_ts_list.append(int(ts[i])); sig_kind_list.append("QM")
             signal_fired_this_window = True
 
-        # Lower-TF QM (MTF path) — fires while window open + TSL price side OK
         if ltf_ts.size > 0 and allow[i] and not signal_fired_this_window:
             tsl_ok = below_tsl[i] if want_sell else above_tsl[i]
             if tsl_ok:
@@ -2430,7 +2472,24 @@ def signals_kwv_qm(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
                     sig_ts_list.append(first_ltf); sig_kind_list.append("MTF QM")
                     signal_fired_this_window = True
 
-    return len(sig_ts_list) > 0, sig_ts_list, sig_kind_list
+        # ── Waiting signals (window open at R2, R3 not yet fired) ────────
+        if qm_wait_filtered[i] and not wait_fired_this_window:
+            wait_ts_list.append(int(ts[i])); wait_kind_list.append("QM")
+            wait_fired_this_window = True
+
+        if ltf_ts.size > 0 and wait_gate[i] and not wait_fired_this_window:
+            tsl_ok = below_tsl[i] if want_sell else above_tsl[i]
+            if tsl_ok:
+                t_lo = int(ts[i])
+                t_hi = (int(ts[i + 1]) if i + 1 < n else t_lo + (int(ts[i]) - int(ts[i - 1])))
+                mask = (ltf_ts >= t_lo) & (ltf_ts < t_hi) & ltf_qm[:len(ltf_ts)]
+                if mask.any():
+                    first_ltf = int(ltf_ts[np.where(mask)[0][0]])
+                    wait_ts_list.append(first_ltf); wait_kind_list.append("MTF QM")
+                    wait_fired_this_window = True
+
+    return (len(sig_ts_list)  > 0, sig_ts_list,  sig_kind_list,
+            len(wait_ts_list) > 0, wait_ts_list, wait_kind_list)
 
 
 def calc_bb_continuation(c: np.ndarray, h: np.ndarray, l: np.ndarray,
@@ -3026,70 +3085,72 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     _ltf_pp  = 10 if is_5m_mode else None
 
     # ⚡ offload to thread pool
-    found, sig_ts_list, sig_kind_list = await _loop.run_in_executor(
+    found, sig_ts_list, sig_kind_list, \
+    wait_found, wait_ts_list, wait_kind_list = await _loop.run_in_executor(
         _CPU_POOL,
         lambda: signals_kwv_qm(
             ds, ds_lower, pivot_win_ts, pivot_end_ts, want_sell,
             ltf_zz_len=_ltf_zz, ltf_s2_pp=_ltf_pp))
 
-    if not found:
+    if not found and not wait_found:
         return None
 
-    # ── Stage 3b exit validation (v38 FIX) ───────────────────────────────
-    # Drop pair if EITHER condition holds at scan time:
-    #   (a) TSL dirMain has flipped against the signal direction, OR
-    #   (b) tdi_tf KC band breached at any bar from the OLDEST surviving signal
-    #       (sig_ts_list[0]) through to the last closed bar.
-    #       Using the oldest signal (not the last) tightens the filter.
-
+    # ── Shared exit validation ────────────────────────────────────────────────
     ts_sig_arr  = ds.ts.values.astype(np.int64)
-    last_sig_ts = sig_ts_list[-1]
-    sig_bar_idx = int(np.searchsorted(ts_sig_arr, last_sig_ts, side="left"))
-    sig_bar_idx = min(sig_bar_idx, len(ds) - 1)
-
-    h_s = ds.high.values
-    l_s = ds.low.values
-    c_s = ds.close.values
-
-    # (a) TSL flip check — last closed bar of sig_tf
+    h_s = ds.high.values; l_s = ds.low.values; c_s = ds.close.values
     _tsl_s, _dir_s = f_swing(h_s, l_s, c_s, SWING_UTAMA)
-    dir_now      = int(_dir_s[-2])          # -2 = last closed bar (skip live)
+    dir_now      = int(_dir_s[-2])
     expected_dir = -1 if want_sell else 1
-    if dir_now != expected_dir:
-        return None                         # TSL trend flipped — drop the pair
+    tsl_flipped  = (dir_now != expected_dir)
 
-    # (b) KC clean check on tdi_tf (da passed in from stage1 — no extra fetch)
-    #     Anchor = oldest signal; signals only form inside [pivot_win_ts, pivot_end_ts]
-    #     so sig_ts_list[0] >= pivot_win_ts always — no clamping needed.
-    h_t = da.high.values
-    l_t = da.low.values
-    c_t = da.close.values
-    u_tdi, l_tdi  = calc_kc(h_t, l_t, c_t)
-    ts_tdi        = da.ts.values.astype(np.int64)
-    kc_anchor_ts  = sig_ts_list[0]          # oldest signal (post-TSL-purge)
-    kc_anchor_idx = int(np.searchsorted(ts_tdi, kc_anchor_ts, side="left"))
-    # Slice anchor → last closed bar (exclude live bar at [-1])
-    c_range = c_t[kc_anchor_idx:-1]
-    u_range = u_tdi[kc_anchor_idx:-1]
-    l_range = l_tdi[kc_anchor_idx:-1]
-    if want_sell:
-        kc_clean = bool(np.all(c_range > l_range))   # never touched KC lower
-    else:
-        kc_clean = bool(np.all(c_range < u_range))   # never touched KC upper
+    h_t = da.high.values; l_t = da.low.values; c_t = da.close.values
+    u_tdi, l_tdi = calc_kc(h_t, l_t, c_t)
+    ts_tdi       = da.ts.values.astype(np.int64)
 
-    if not kc_clean:
-        return None                         # KC breach since oldest signal → drop
+    def _kc_clean(anchor_ts):
+        idx     = int(np.searchsorted(ts_tdi, anchor_ts, side="left"))
+        c_range = c_t[idx:-1]; u_r = u_tdi[idx:-1]; l_r = l_tdi[idx:-1]
+        return bool(np.all(c_range > l_r) if want_sell else np.all(c_range < u_r))
 
-    side           = "SELL" if want_sell else "BUY"
-    n_sigs         = len(sig_ts_list)
-    sig_label      = f"{n_sigs} sig" + ("s" if n_sigs > 1 else "")
-    last_sig_price = float(ds.close.iloc[sig_bar_idx])
-    last_sig_kind  = "MTF" if sig_kind_list[-1] == "MTF QM" else "QM"
+    # ── CONFIRMED path ────────────────────────────────────────────────────────
+    if found:
+        last_sig_ts    = sig_ts_list[-1]
+        sig_bar_idx    = min(int(np.searchsorted(ts_sig_arr, last_sig_ts, side="left")), len(ds) - 1)
+        last_sig_price = float(ds.close.iloc[sig_bar_idx])
 
-    det = (f"{detail} | {mid_tf.upper()}_CloudBS✓({n_cloud}) {sig_tf.upper()}_QM✓ ({sig_label})"
-           f" sig_kind={last_sig_kind}"
-           f" sig_ts_ms={last_sig_ts} sig_price={last_sig_price:.8g}")
-    return (side, sym, det, pivot_ts)
+        if tsl_flipped:
+            found = False; sig_ts_list.clear(); sig_kind_list.clear()
+        elif not _kc_clean(sig_ts_list[0]):
+            found = False; sig_ts_list.clear(); sig_kind_list.clear()
+        else:
+            side           = "SELL" if want_sell else "BUY"
+            n_sigs         = len(sig_ts_list)
+            sig_label      = f"{n_sigs} sig" + ("s" if n_sigs > 1 else "")
+            last_sig_kind  = "MTF" if sig_kind_list[-1] == "MTF QM" else "QM"
+            det = (f"{detail} | {mid_tf.upper()}_CloudBS✓({n_cloud}) {sig_tf.upper()}_QM✓ ({sig_label})"
+                   f" sig_kind={last_sig_kind}"
+                   f" sig_ts_ms={last_sig_ts} sig_price={last_sig_price:.8g}")
+            return (side, sym, det, pivot_ts)
+
+    # ── WAITING path (QM fired pre-R3, or confirmed was dropped above) ────────
+    if wait_found:
+        if tsl_flipped:
+            return None
+        if not _kc_clean(wait_ts_list[0]):
+            return None
+        last_wait_ts    = wait_ts_list[-1]
+        wait_bar_idx    = min(int(np.searchsorted(ts_sig_arr, last_wait_ts, side="left")), len(ds) - 1)
+        last_wait_price = float(ds.close.iloc[wait_bar_idx])
+        n_wait          = len(wait_ts_list)
+        wait_label      = f"{n_wait} sig" + ("s" if n_wait > 1 else "")
+        last_wait_kind  = "MTF" if wait_kind_list[-1] == "MTF QM" else "QM"
+        side            = "WAIT_SELL" if want_sell else "WAIT_BUY"
+        det = (f"{detail} | {mid_tf.upper()}_CloudBS✓({n_cloud}) {sig_tf.upper()}_QM⏳ ({wait_label})"
+               f" sig_kind={last_wait_kind}"
+               f" sig_ts_ms={last_wait_ts} sig_price={last_wait_price:.8g}")
+        return (side, sym, det, pivot_ts)
+
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3143,6 +3204,7 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
         state = {
             "s1_done": 0, "s2_in": 0, "s3_in": 0,
             "buy_valid": [], "sell_valid": [],
+            "buy_wait":  [], "sell_wait":  [],
             "total": total,
         }
         last_ui_update = 0.0
@@ -3177,8 +3239,12 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
                 entry = (sym2, det2, pt)
                 if side == "BUY":
                     state["buy_valid"].append(entry)
-                else:
+                elif side == "SELL":
                     state["sell_valid"].append(entry)
+                elif side == "WAIT_BUY":
+                    state["buy_wait"].append(entry)
+                elif side == "WAIT_SELL":
+                    state["sell_wait"].append(entry)
                 progress_callback(state)
                 last_ui_update = time.time()
 
@@ -3415,19 +3481,25 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             f"{sig_tf}={len(ds)} bars  |  lower_tf={ltf_label}"))
 
         _is_5m = sig_tf == "5m"
-        found, sig_ts_list, sig_kind_list = signals_kwv_qm(
+        found, sig_ts_list, sig_kind_list, \
+        wait_found, wait_ts_list, wait_kind_list = signals_kwv_qm(
             ds, ds_lower, pivot_win_ts, pivot_end_ts, want_sell,
             ltf_zz_len=10 if _is_5m else None,
             ltf_s2_pp =10 if _is_5m else None)
 
         n_sigs = len(sig_ts_list)
+        n_wait = len(wait_ts_list)
         if found:
             n_qm  = sig_kind_list.count("QM")
             n_mtf = sig_kind_list.count("MTF QM")
             kind_sum = (f"QM×{n_qm}" if n_qm else "") + (" MTF QM×" + str(n_mtf) if n_mtf else "")
-            sig_detail = f"{n_sigs} signal(s) [{kind_sum.strip()}] | latest: {_age(sig_ts_list[-1])}"
+            sig_detail = f"{n_sigs} confirmed signal(s) [{kind_sum.strip()}] | latest: {_age(sig_ts_list[-1])}"
+            if wait_found:
+                sig_detail += f" | {n_wait} waiting (pre-R3)"
         else:
-            sig_detail = f"No QM signals in pivot window on {sig_tf}/{choch_tf}"
+            sig_detail = f"No confirmed QM signals in pivot window on {sig_tf}/{choch_tf}"
+            if wait_found:
+                sig_detail += f" | {n_wait} waiting signal(s) pre-R3"
 
         logs.append(("S3b QM Signal", "✅ PASS" if found else "❌ FAIL", sig_detail))
         if not found:
@@ -3673,6 +3745,8 @@ def _init_session():
         "df_final":     None,
         "buy_valid":    [],
         "sell_valid":   [],
+        "buy_wait":     [],
+        "sell_wait":    [],
         "csv_bytes":    None,
         "txt_bytes":    None,
         "csv_fname":    "",
@@ -3684,6 +3758,8 @@ def _init_session():
         "scan_timestamp": "",
         "buy_valid_full":  [],
         "sell_valid_full": [],
+        "buy_wait_full":   [],
+        "sell_wait_full":  [],
         "tz_key":       _tz_default,
         "time_fmt":     _tf_default,
         "show_tz_panel": False,
@@ -3694,7 +3770,7 @@ def _init_session():
             st.session_state[k] = v
 
 
-def _sc_counters_html(nbv: int, nsv: int,
+def _sc_counters_html(nbv: int, nsv: int, nbw: int, nsw: int,
                       s2: int, s3: int, elapsed: float, total: int, done: int) -> str:
     spd = done / max(elapsed, 0.01)
     return f"""
@@ -3706,6 +3782,14 @@ def _sc_counters_html(nbv: int, nsv: int,
   <div class="sc-cnt r">
     <div class="cnt-lbl">SELL ✅</div>
     <div class="cnt-val">{nsv}</div>
+  </div>
+  <div class="sc-cnt gy">
+    <div class="cnt-lbl">BUY ⏳</div>
+    <div class="cnt-val">{nbw}</div>
+  </div>
+  <div class="sc-cnt gy">
+    <div class="cnt-lbl">SELL ⏳</div>
+    <div class="cnt-val">{nsw}</div>
   </div>
   <div class="sc-cnt b">
     <div class="cnt-lbl">S2 Passed</div>
@@ -3724,15 +3808,17 @@ def _sc_counters_html(nbv: int, nsv: int,
 
 
 def _sc_summary_html(total: int, elapsed: float, bv: int,
-                     sv: int, mode_key: str) -> str:
-    all_s = bv + sv
+                     sv: int, bw: int, sw: int, mode_key: str) -> str:
+    all_s = bv + sv + bw + sw
     spd   = total / max(elapsed, 0.01)
     return (
         f'<div class="sc-summary">'
         f'<span class="ss-title">&#9989; Scan <span>Complete</span></span>'
         f'<span class="ss-chip g">&#9650; BUY {bv}</span>'
         f'<span class="ss-chip r">&#9660; SELL {sv}</span>'
-        f'<span class="ss-meta">'
+        + (f'<span class="ss-chip gd">&#9650;&#8987; WAIT {bw}</span>' if bw else '')
+        + (f'<span class="ss-chip rd">&#9660;&#8987; WAIT {sw}</span>' if sw else '')
+        + f'<span class="ss-meta">'
         f'<b>{all_s}</b> signals &middot; {total} sym &middot; '
         f'{elapsed:.1f}s &middot; {spd:.0f}/s &middot; <b>{mode_key.upper()}</b>'
         f'</span>'
@@ -3784,12 +3870,18 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
 
 def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
                               tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> str:
-    """Render All tab with BUY and SELL signal cards."""
+    """Render All tab with BUY and SELL confirmed + waiting signal cards."""
     parts = []
     if bv_list:
         parts.append(_signal_cards_html(bv_list, True,  True, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
     if sv_list:
         parts.append(_signal_cards_html(sv_list, False, True, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
+    if bw_list or sw_list:
+        parts.append('<div class="sc-wait-label">⏳ WAITING — KWV window open (R2 passed), awaiting R3 confirmation</div>')
+    if bw_list:
+        parts.append(_signal_cards_html(bw_list, True,  False, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
+    if sw_list:
+        parts.append(_signal_cards_html(sw_list, False, False, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
     return "".join(parts) if parts else '<div class="sc-empty"><div class="ico">&#128269;</div><p>No signals.</p></div>'
 
 
@@ -3823,7 +3915,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v46</span>
+    <span class="sc-badge blue">sc-badge blue">&#128640; v46#128640; v48</span>
     <span class="sc-badge green">&#10004; 3 Stages</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
     <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
@@ -4072,6 +4164,8 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     _sc_counters_html(
                         len(state["buy_valid"]),
                         len(state["sell_valid"]),
+                        len(state.get("buy_wait", [])),
+                        len(state.get("sell_wait", [])),
                         state["s2_in"], state["s3_in"], elapsed, total, done),
                     unsafe_allow_html=True,
                 )
@@ -4129,6 +4223,8 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 total      = state["total"]
                 buy_valid  = sorted(state["buy_valid"],  key=lambda x: x[0])
                 sell_valid = sorted(state["sell_valid"], key=lambda x: x[0])
+                buy_wait   = sorted(state.get("buy_wait",  []), key=lambda x: x[0])
+                sell_wait  = sorted(state.get("sell_wait", []), key=lambda x: x[0])
 
                 prog_bar.progress(1.0, text=f"Done — {total} symbols in {elapsed:.1f}s")
                 ctr_ph.empty()
@@ -4138,8 +4234,10 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 timestamp = _fmt_ts(now_ms, tz_h, tz_key, time_fmt)
 
                 all_results = (
-                    [("BUY",  s, d, p) for s, d, p in buy_valid] +
-                    [("SELL", s, d, p) for s, d, p in sell_valid]
+                    [("BUY",       s, d, p) for s, d, p in buy_valid] +
+                    [("SELL",      s, d, p) for s, d, p in sell_valid] +
+                    [("WAIT_BUY",  s, d, p) for s, d, p in buy_wait]  +
+                    [("WAIT_SELL", s, d, p) for s, d, p in sell_wait]
                 )
 
                 if all_results:
@@ -4188,8 +4286,12 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "df_final":     df_final,
                         "buy_valid":    [(s, d) for s, d, _ in buy_valid],
                         "sell_valid":   [(s, d) for s, d, _ in sell_valid],
+                        "buy_wait":     [(s, d) for s, d, _ in buy_wait],
+                        "sell_wait":    [(s, d) for s, d, _ in sell_wait],
                         "buy_valid_full":  [(s, d, p) for s, d, p in buy_valid],
                         "sell_valid_full": [(s, d, p) for s, d, p in sell_valid],
+                        "buy_wait_full":   [(s, d, p) for s, d, p in buy_wait],
+                        "sell_wait_full":  [(s, d, p) for s, d, p in sell_wait],
                     })
                 else:
                     st.session_state.update({
@@ -4218,12 +4320,15 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
             bv_list_raw = st.session_state["buy_valid"]
             sv_list_raw = st.session_state["sell_valid"]
+            bw_list_raw = st.session_state.get("buy_wait",  [])
+            sw_list_raw = st.session_state.get("sell_wait", [])
             bv, sv = len(bv_list_raw), len(sv_list_raw)
-            all_sigs = bv + sv
+            bw, sw = len(bw_list_raw), len(sw_list_raw)
+            all_sigs = bv + sv + bw + sw
 
             # Persistent summary banner
             st.markdown(
-                _sc_summary_html(total, elapsed, bv, sv, mode_key_r),
+                _sc_summary_html(total, elapsed, bv, sv, bw, sw, mode_key_r),
                 unsafe_allow_html=True)
 
             if all_sigs == 0:
@@ -4272,23 +4377,27 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 st.markdown("<div style='margin-bottom:0.3rem'></div>",
                             unsafe_allow_html=True)
 
-                # Apply sort to both lists
+                # Apply sort to all lists
                 cur_sort = st.session_state.get("results_sort", "newest")
                 bv_list = _sort_signals(bv_list_raw, cur_sort)
                 sv_list = _sort_signals(sv_list_raw, cur_sort)
+                bw_list = _sort_signals(bw_list_raw, cur_sort)
+                sw_list = _sort_signals(sw_list_raw, cur_sort)
 
-                # Signal card tabs — sticky (backed by session_state)
+                # Signal card tabs
                 tab_labels = [
                     f"All ({all_sigs})",
-                    f"BUY  {bv}",
-                    f"SELL  {sv}",
+                    f"BUY ✅ {bv}",
+                    f"SELL ✅ {sv}",
+                    f"BUY ⏳ {bw}",
+                    f"SELL ⏳ {sw}",
                 ]
-                t_all, t_bv, t_sv = st.tabs(tab_labels)
+                t_all, t_bv, t_sv, t_bw, t_sw = st.tabs(tab_labels)
 
                 with t_all:
-                    if bv_list or sv_list:
+                    if bv_list or sv_list or bw_list or sw_list:
                         st.markdown(
-                            _all_signals_two_col_html(bv_list, sv_list, [], [], mode_key_r, r_tz_h, r_tz_key, r_time_fmt),
+                            _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key_r, r_tz_h, r_tz_key, r_time_fmt),
                             unsafe_allow_html=True)
                     else:
                         st.markdown('<div class="sc-empty"><div class="ico">&#128269;</div><p>No signals.</p></div>',
@@ -4298,10 +4407,18 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
                 with t_sv:
                     st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
+                with t_bw:
+                    st.markdown('<div class="sc-wait-label">⏳ WAITING — QM setup complete, awaiting R3 confirmation</div>', unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
+                with t_sw:
+                    st.markdown('<div class="sc-wait-label">⏳ WAITING — QM setup complete, awaiting R3 confirmation</div>', unsafe_allow_html=True)
+                    st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
 
                 # Full table + export — rebuilt dynamically with current sort ──
                 _bv_full = st.session_state.get("buy_valid_full",  [])
                 _sv_full = st.session_state.get("sell_valid_full", [])
+                _bw_full = st.session_state.get("buy_wait_full",   [])
+                _sw_full = st.session_state.get("sell_wait_full",  [])
 
                 # Sort the full tuples the same way as the display lists
                 def _sort_full(lst, sk):
@@ -4316,6 +4433,8 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                 _bv_s = _sort_full(_bv_full, cur_sort)
                 _sv_s = _sort_full(_sv_full, cur_sort)
+                _bw_s = _sort_full(_bw_full, cur_sort)
+                _sw_s = _sort_full(_sw_full, cur_sort)
 
                 _exp_now_ms    = st.session_state.get("scan_now_ms",    int(time.time()*1000))
                 _exp_timestamp = st.session_state.get("scan_timestamp", "")
@@ -4326,8 +4445,10 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                 # Build sorted export rows
                 _all_sorted = (
-                    [("BUY",  s, d, p) for s, d, p in _bv_s] +
-                    [("SELL", s, d, p) for s, d, p in _sv_s]
+                    [("BUY",       s, d, p) for s, d, p in _bv_s] +
+                    [("SELL",      s, d, p) for s, d, p in _sv_s] +
+                    [("WAIT_BUY",  s, d, p) for s, d, p in _bw_s] +
+                    [("WAIT_SELL", s, d, p) for s, d, p in _sw_s]
                 )
                 if _all_sorted:
                     _exp_rows = [
@@ -4352,10 +4473,14 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     _tbuf.write(f"Symbols   : {total}  |  Elapsed : {elapsed:.1f}s\n")
                     _tbuf.write(f"BUY  : {bv}\n")
                     _tbuf.write(f"SELL : {sv}\n")
+                    _tbuf.write(f"BUY  (WAIT) : {bw}\n")
+                    _tbuf.write(f"SELL (WAIT) : {sw}\n")
                     _tbuf.write("=" * 72 + "\n")
                     for _dir, _glbl, _grp in [
-                        ("BUY",  "BUY",  _bv_s),
-                        ("SELL", "SELL", _sv_s),
+                        ("BUY",       "BUY  ✅ CONFIRMED",   _bv_s),
+                        ("SELL",      "SELL ✅ CONFIRMED",   _sv_s),
+                        ("WAIT_BUY",  "BUY  ⏳ WAITING R3",  _bw_s),
+                        ("WAIT_SELL", "SELL ⏳ WAITING R3",  _sw_s),
                     ]:
                         if not _grp: continue
                         _tbuf.write(f"\n{'─'*28} {_glbl} {'─'*28}\n")
