@@ -3,8 +3,6 @@ Binance Futures Scanner - ULTRA-FAST Edition v49
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
 v49 fixes:
-  - UI: st.dataframe(width="stretch") → use_container_width=True (was crashing)
-  - UI: st.download_button(width="stretch") → use_container_width=True (was crashing)
   - Proxy: auto-rotate to next slot on 407/403 or hard connection failure mid-scan
   - Signals: waiting QMs promoted to confirmed when Pine KWV R3 fires
 
@@ -4580,7 +4578,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                             }
                             # Show sorted df in table
                             st.dataframe(
-                                _df_sorted[display_cols], use_container_width=True,
+                                _df_sorted[display_cols], width="stretch",
                                 hide_index=True,
                                 height=min(540, 50 + 36 * len(_df_sorted)),
                                 column_config=col_cfg)
@@ -4591,12 +4589,12 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                                 "&#128196; Export CSV",
                                 data=_csv_bytes,
                                 file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.csv",
-                                mime="text/csv", use_container_width=True)
+                                mime="text/csv", width="stretch")
                             ec2.download_button(
                                 "&#128221; Export TXT",
                                 data=_txt_bytes,
                                 file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.txt",
-                                mime="text/plain", use_container_width=True)
+                                mime="text/plain", width="stretch")
 
     # ══ TAB 2: DEBUG SYMBOL ═══════════════════════════════════════════
     with tab_debug:
@@ -4660,7 +4658,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                 st.dataframe(
                     df_dbg.style.map(_color, subset=["Status"]),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                     height=50 + 38 * len(rows),
                 )
 
