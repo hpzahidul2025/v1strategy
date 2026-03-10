@@ -3977,7 +3977,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v48</span>
+    <span class="sc-badge blue">&#128640; v49</span>
     <span class="sc-badge green">&#10004; 3 Stages</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
     <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
@@ -4053,17 +4053,17 @@ def main():
 
         # ── Proxy status banner ───────────────────────────────────────
         _all_proxies  = _get_all_proxies()
-        # Use module-level _proxy_idx for live accuracy during/after rotation;
-        # fall back to session_state before first scan, -1 = not yet connected.
-        _active_idx   = _proxy_idx if _proxy_list else st.session_state.get("active_proxy_idx", -1)
+        _active_proxy = st.session_state.get("active_proxy", "")
+        # Use live module-level _proxy_idx if a scan has run; otherwise default
+        # to slot 0 (first configured slot) as the presumed active slot.
+        _active_idx = _proxy_idx if _proxy_list else st.session_state.get("active_proxy_idx", 0)
 
         if _all_proxies:
             # Build slot chips: green = active, grey = standby
-            # -1 means no scan has run yet — show all as STANDBY (not falsely ACTIVE)
             _slot_chips = []
             for _i, _p in enumerate(_all_proxies):
-                _lbl       = _proxy_label(_p)
-                _is_active = (_active_idx >= 0) and (_i == _active_idx)
+                _lbl   = _proxy_label(_p)
+                _is_active = (_i == _active_idx)
                 _chip_style = (
                     "background:rgba(0,230,118,0.12);color:#00e676;"
                     "border:1px solid rgba(0,230,118,0.35);"
@@ -4071,7 +4071,7 @@ def main():
                     "background:rgba(255,255,255,0.04);color:#6a6a88;"
                     "border:1px solid rgba(255,255,255,0.08);"
                 )
-                _dot         = "🟢" if _is_active else "⚪"
+                _dot = "🟢" if _is_active else "⚪"
                 _active_label = "&nbsp;<b style=\"color:#00e676\">ACTIVE</b>" if _is_active else " STANDBY"
                 _slot_chips.append(
                     f'<span style="display:inline-flex;align-items:center;gap:5px;'
