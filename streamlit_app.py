@@ -1,6 +1,12 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v48
+Binance Futures Scanner - ULTRA-FAST Edition v49
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v49 fixes:
+  - UI: st.dataframe(width="stretch") → use_container_width=True (was crashing)
+  - UI: st.download_button(width="stretch") → use_container_width=True (was crashing)
+  - Proxy: auto-rotate to next slot on 407/403 or hard connection failure mid-scan
+  - Signals: waiting QMs promoted to confirmed when Pine KWV R3 fires
 
 v46 WARMUP FIX (KWV indicator convergence):
   - _WARMUP raised 60 → 200 bars in stage3_worker dynamic limit calculation.
@@ -359,10 +365,10 @@ _FAPI_URL = "https://fapi.binance.com/fapi/v1/klines"
 _http_session: Optional[aiohttp.ClientSession] = None
 _http_proxy:   Optional[str] = None   # active proxy URL for direct klines fetches
 
-# v49: mid-scan proxy rotation — rotates automatically when active slot is exhausted
-_proxy_list:   list  = []   # all configured proxy URLs in priority order
-_proxy_idx:    int   = 0    # index into _proxy_list currently in use
-_proxy_lock:   Optional[asyncio.Lock] = None   # prevents multiple coroutines rotating at once
+# v49: mid-scan proxy rotation
+_proxy_list:   list  = []
+_proxy_idx:    int   = 0
+_proxy_lock:   Optional[asyncio.Lock] = None
 
 KC_LEN        = 20
 KC_MULT       = 2.0
@@ -480,7 +486,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v48",
+    page_title="Binance Futures Scanner v49",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1920,7 +1926,7 @@ async def _rotate_proxy() -> bool:
     """
     v49: Mid-scan proxy rotation.
     Called when fetch_klines detects the active proxy slot is bandwidth-exhausted
-    (407 Proxy Auth Required, 403 Forbidden, or repeated connection failures).
+    (407 Proxy Auth Required, 403 Forbidden, or hard connection failure).
     Atomically advances _proxy_idx to the next configured slot.
     Returns True if a new slot was activated, False if no more slots available.
     """
@@ -1930,10 +1936,9 @@ async def _rotate_proxy() -> bool:
     async with _proxy_lock:
         next_idx = _proxy_idx + 1
         if next_idx >= len(_proxy_list):
-            return False   # all slots exhausted
+            return False
         _proxy_idx  = next_idx
         _http_proxy = _proxy_list[next_idx] if _proxy_list[next_idx] else None
-        # persist to session_state so the UI banner updates
         try:
             st.session_state["active_proxy"]     = _proxy_list[next_idx]
             st.session_state["active_proxy_idx"] = next_idx
@@ -2898,14 +2903,13 @@ async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarra
             async with sem:   # ⚡ semaphore released before any sleep — no slot held during back-off
                 async with _http_session.get(_FAPI_URL, params=params, proxy=_http_proxy) as resp:
                     if resp.status in (407, 403):
-                        # v49: proxy bandwidth exhausted or auth rejected — rotate to next slot
+                        # v49: proxy bandwidth exhausted — rotate to next slot
                         rotated = await _rotate_proxy()
                         if not rotated:
-                            return None   # no more proxy slots
-                        # retry immediately on next iteration with new _http_proxy
-                        continue
+                            return None
+                        continue   # retry immediately with new _http_proxy
                     if resp.status == 429 or resp.status >= 500:
-                        pass   # fall through; sleep happens outside sem
+                        pass   # fall through to jittered back-off
                     elif resp.status != 200:
                         return None
                     else:
@@ -2918,7 +2922,7 @@ async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarra
             # ⚡ jittered back-off outside sem so other coroutines can proceed
             await asyncio.sleep(1.0 * (_att + 1) + random.random() * 0.5)
         except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
-            # v49: proxy connection hard failure — rotate immediately
+            # v49: hard proxy failure — rotate immediately
             rotated = await _rotate_proxy()
             if not rotated:
                 return None
@@ -3244,10 +3248,9 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
     global _http_session, _http_proxy, _proxy_list, _proxy_idx, _proxy_lock
     _http_session = _scan_session
     _http_proxy   = active_proxy if active_proxy else None
-    # v49: initialise rotation state so _rotate_proxy() knows the full slot list
-    _proxy_list  = proxies
-    _proxy_idx   = proxy_idx
-    _proxy_lock  = asyncio.Lock()
+    _proxy_list   = proxies
+    _proxy_idx    = proxy_idx
+    _proxy_lock   = asyncio.Lock()
 
     try:
 
@@ -3358,7 +3361,6 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Binance Futures"))
             return logs
         _http_proxy  = active_proxy if active_proxy else None
-        # v49: initialise rotation state
         _proxy_list  = proxies
         _proxy_idx   = proxy_idx
         _proxy_lock  = asyncio.Lock()
@@ -4578,7 +4580,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                             }
                             # Show sorted df in table
                             st.dataframe(
-                                _df_sorted[display_cols], width="stretch",
+                                _df_sorted[display_cols], use_container_width=True,
                                 hide_index=True,
                                 height=min(540, 50 + 36 * len(_df_sorted)),
                                 column_config=col_cfg)
@@ -4589,12 +4591,12 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                                 "&#128196; Export CSV",
                                 data=_csv_bytes,
                                 file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.csv",
-                                mime="text/csv", width="stretch")
+                                mime="text/csv", use_container_width=True)
                             ec2.download_button(
                                 "&#128221; Export TXT",
                                 data=_txt_bytes,
                                 file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.txt",
-                                mime="text/plain", width="stretch")
+                                mime="text/plain", use_container_width=True)
 
     # ══ TAB 2: DEBUG SYMBOL ═══════════════════════════════════════════
     with tab_debug:
@@ -4658,7 +4660,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                 st.dataframe(
                     df_dbg.style.map(_color, subset=["Status"]),
-                    width="stretch", hide_index=True,
+                    use_container_width=True, hide_index=True,
                     height=50 + 38 * len(rows),
                 )
 
