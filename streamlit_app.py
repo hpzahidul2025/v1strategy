@@ -357,7 +357,12 @@ _FAPI_URL = "https://fapi.binance.com/fapi/v1/klines"
 # Using a direct session bypasses all ccxt overhead (JSON schema validation,
 # market normalisation, rate-limit bookkeeping) for candle fetches.
 _http_session: Optional[aiohttp.ClientSession] = None
-_http_proxy:   Optional[str] = None   # proxy URL for direct klines fetches
+_http_proxy:   Optional[str] = None   # active proxy URL for direct klines fetches
+
+# v49: mid-scan proxy rotation — rotates automatically when active slot is exhausted
+_proxy_list:   list  = []   # all configured proxy URLs in priority order
+_proxy_idx:    int   = 0    # index into _proxy_list currently in use
+_proxy_lock:   Optional[asyncio.Lock] = None   # prevents multiple coroutines rotating at once
 
 KC_LEN        = 20
 KC_MULT       = 2.0
@@ -1911,6 +1916,32 @@ async def _try_load_markets(proxies: list) -> tuple:
     )
 
 
+async def _rotate_proxy() -> bool:
+    """
+    v49: Mid-scan proxy rotation.
+    Called when fetch_klines detects the active proxy slot is bandwidth-exhausted
+    (407 Proxy Auth Required, 403 Forbidden, or repeated connection failures).
+    Atomically advances _proxy_idx to the next configured slot.
+    Returns True if a new slot was activated, False if no more slots available.
+    """
+    global _http_proxy, _proxy_idx, _proxy_lock
+    if _proxy_lock is None:
+        return False
+    async with _proxy_lock:
+        next_idx = _proxy_idx + 1
+        if next_idx >= len(_proxy_list):
+            return False   # all slots exhausted
+        _proxy_idx  = next_idx
+        _http_proxy = _proxy_list[next_idx] if _proxy_list[next_idx] else None
+        # persist to session_state so the UI banner updates
+        try:
+            st.session_state["active_proxy"]     = _proxy_list[next_idx]
+            st.session_state["active_proxy_idx"] = next_idx
+        except Exception:
+            pass
+        return True
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  INDICATOR MATH  — NumPy-vectorized
 # ══════════════════════════════════════════════════════════════════════
@@ -2456,7 +2487,18 @@ def signals_kwv_qm(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
             wait_fired_this_window = False
         prev_wait = cur_wait
 
-        # ── Confirmed signals (R3 passed) ────────────────────────────────
+        # ── R3 fires — promote all waiting QMs to confirmed ─────────────
+        # Pine's sellSignal/buySignal fires on this bar: any QMs collected
+        # in the R2→R3 waiting window are now confirmed signals.
+        if allow[i] and wait_ts_list:
+            sig_ts_list.extend(wait_ts_list)
+            sig_kind_list.extend(k + " (promoted)" for k in wait_kind_list)
+            wait_ts_list.clear()
+            wait_kind_list.clear()
+            signal_fired_this_window = True
+            wait_fired_this_window   = False
+
+        # ── Confirmed signals (R3 passed, fresh QM on R3 bar itself) ─────
         if qm_sig_filtered[i] and not signal_fired_this_window:
             sig_ts_list.append(int(ts[i])); sig_kind_list.append("QM")
             signal_fired_this_window = True
@@ -2855,6 +2897,13 @@ async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarra
         try:
             async with sem:   # ⚡ semaphore released before any sleep — no slot held during back-off
                 async with _http_session.get(_FAPI_URL, params=params, proxy=_http_proxy) as resp:
+                    if resp.status in (407, 403):
+                        # v49: proxy bandwidth exhausted or auth rejected — rotate to next slot
+                        rotated = await _rotate_proxy()
+                        if not rotated:
+                            return None   # no more proxy slots
+                        # retry immediately on next iteration with new _http_proxy
+                        continue
                     if resp.status == 429 or resp.status >= 500:
                         pass   # fall through; sleep happens outside sem
                     elif resp.status != 200:
@@ -2868,6 +2917,11 @@ async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarra
                         return arr
             # ⚡ jittered back-off outside sem so other coroutines can proceed
             await asyncio.sleep(1.0 * (_att + 1) + random.random() * 0.5)
+        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+            # v49: proxy connection hard failure — rotate immediately
+            rotated = await _rotate_proxy()
+            if not rotated:
+                return None
         except (aiohttp.ClientError, asyncio.TimeoutError):
             if _att < 2:
                 await asyncio.sleep(0.5 * (_att + 1) + random.random() * 0.3)
@@ -3187,9 +3241,13 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
         connector=_scan_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
     )
-    global _http_session, _http_proxy
+    global _http_session, _http_proxy, _proxy_list, _proxy_idx, _proxy_lock
     _http_session = _scan_session
     _http_proxy   = active_proxy if active_proxy else None
+    # v49: initialise rotation state so _rotate_proxy() knows the full slot list
+    _proxy_list  = proxies
+    _proxy_idx   = proxy_idx
+    _proxy_lock  = asyncio.Lock()
 
     try:
 
@@ -3285,7 +3343,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         connector=_dbg_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
     )
-    global _http_session, _http_proxy
+    global _http_session, _http_proxy, _proxy_list, _proxy_idx, _proxy_lock
     _http_session = _dbg_session
 
     try:
@@ -3299,7 +3357,11 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         if sym not in ex.markets:
             logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Binance Futures"))
             return logs
-        _http_proxy = active_proxy if active_proxy else None
+        _http_proxy  = active_proxy if active_proxy else None
+        # v49: initialise rotation state
+        _proxy_list  = proxies
+        _proxy_idx   = proxy_idx
+        _proxy_lock  = asyncio.Lock()
         logs.append(("Proxy", "✅ PASS",
             f"Connected via proxy slot {proxy_idx + 1} ({_proxy_label(active_proxy)})"))
 
