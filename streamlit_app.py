@@ -1,6 +1,28 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v43
+Binance Futures Scanner - ULTRA-FAST Edition v46
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v46 WARMUP FIX (KWV indicator convergence):
+  - _WARMUP raised 60 → 200 bars in stage3_worker dynamic limit calculation.
+  - KVO uses EMA(slow=55): needs ~200 bars to converge (span×3.6).
+    With only 60 warmup bars, KVO was unconverged for fresh pivots (1–4h old),
+    causing the KWV R1/R2/R3 state machine to fire on biased KVO values.
+  - Old pivots (24–48h) were unaffected — sig_limit was already 166–262 bars.
+  - Fix: sig_limit and mid_limit now request 200 warmup bars before pivot_win_ts.
+    Max sig_limit = 192 + 210 = 402 bars (15M mode, 48h pivot) — well under 1500 cap.
+    All other indicators (TSL-50, KC-20, MFI-14, Weis-2) get extra headroom for free.
+
+v45 SIGNAL WINDOW LOGIC (one signal per KWV window cycle):
+  - Each KWV window cycle (R1->R2->R3 sequence) now contributes at most ONE signal.
+  - A second signal requires the window to close and a brand-new cycle to open.
+  - Rising edge of allow[] detected per bar to reset signal_fired_this_window.
+  - TSL purge also resets signal_fired_this_window.
+
+v44 SIGNAL ENGINE REPLACEMENT (Pine Script QM+KWV exact replica):
+  - Pressure dot (wt2 > 80/< 20 + TSL) + latch REMOVED.
+  - Replaced with KWV (Klinger Volume Oscillator + Weis Wave + MFI) state machines.
+  New indicators: calc_mfi, calc_kvo, calc_weis_wave, calc_kwv_windows
+  signals_kwv_qm replaces signals_pine_only (same call-site signature)
 
 v43 PERF — CPU indicator math (no logic changes):
   - _sma(): pd.Series.rolling → np.convolve — 7-16x faster at all bar counts.
@@ -334,8 +356,8 @@ _FAPI_URL = "https://fapi.binance.com/fapi/v1/klines"
 # Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
 # Using a direct session bypasses all ccxt overhead (JSON schema validation,
 # market normalisation, rate-limit bookkeeping) for candle fetches.
-_http_session: aiohttp.ClientSession | None = None
-_http_proxy:   str | None = None   # proxy URL for direct klines fetches
+_http_session: Optional[aiohttp.ClientSession] = None
+_http_proxy:   Optional[str] = None   # proxy URL for direct klines fetches
 
 KC_LEN        = 20
 KC_MULT       = 2.0
@@ -346,11 +368,13 @@ TDI_SLOW      = 11
 SWING_ALT     = 5
 SWING_UTAMA   = 50
 LOOKBACK_SIG  = 100
-PRESSURE_N1   = 9
-PRESSURE_N2   = 6
-PRESSURE_N3   = 3
-VOL_FAST_LEN  = 5
-VOL_SLOW_LEN  = 20
+# ── KWV (KVO + Weis Wave + MFI) — Pine Script exact replica ──────────────
+KVO_FAST     = 21      # Klinger fast EMA length
+KVO_SLOW     = 55      # Klinger slow EMA length
+WEIS_LEN     = 2       # Weis Wave trend detection length
+MFI_LEN      = 14      # Money Flow Index period
+MFI_OB       = 70      # MFI overbought threshold
+MFI_OS       = 30      # MFI oversold  threshold
 ADX_LEN       = 14
 ADX_TH        = 25.0
 BB_LEN        = 20
@@ -451,7 +475,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v43",
+    page_title="Binance Futures Scanner v46",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1825,7 +1849,7 @@ st.markdown("""
 PROXY_KEYS = ["PROXY_URL", "PROXY_URL_2", "PROXY_URL_3", "PROXY_URL_4"]
 
 
-def _get_all_proxies() -> list[str]:
+def _get_all_proxies() -> list:
     """Return all configured proxy URLs in priority order, skipping empty slots."""
     proxies = []
     for key in PROXY_KEYS:
@@ -1867,7 +1891,7 @@ def _make_exchange() -> ccxt_async.binanceusdm:
     return _make_exchange_with_proxy(_get_proxy())
 
 
-async def _try_load_markets(proxies: list[str]) -> tuple:
+async def _try_load_markets(proxies: list) -> tuple:
     """
     Attempt load_markets() across proxy list until one succeeds.
     Returns (exchange, active_proxy_url, active_proxy_index).
@@ -2012,28 +2036,120 @@ def f_swing(h: np.ndarray, l: np.ndarray, c: np.ndarray, no: int):
     return tsl, avn
 
 
-def calc_wt2(h: np.ndarray, l: np.ndarray, c: np.ndarray, v: np.ndarray) -> np.ndarray:
-    s   = (h + l + c) / 3.0
-    e1  = _ema(s, PRESSURE_N1)
-    d   = s - e1
-    den = _ema(np.abs(d), PRESSURE_N1)
-    den = np.where(den == 0, 1e-9, den)
-    tci = _ema(d / (0.025 * den), PRESSURE_N2) + 50.0
-    chg    = np.diff(s, prepend=s[0])
-    vs     = v * s                          # plain ndarray — no pd.Series needed
-    chg_up = chg > 0
-    # ⚡ v43: cumsum rolling-sum replaces pd.Series.where().rolling() — 29x faster.
-    # For a window of PRESSURE_N3=3: sum[i] = cs[i+1] - cs[i+1-3]
-    up_cs  = np.cumsum(np.where(chg_up,  vs, 0.0))
-    dn_cs  = np.cumsum(np.where(~chg_up, vs, 0.0))
-    p      = PRESSURE_N3
-    num    = np.full(len(s), np.nan)
-    dn     = np.full(len(s), np.nan)
-    num[p - 1:] = up_cs[p - 1:] - np.concatenate([[0.0], up_cs[:-(p)]])
-    dn [p - 1:] = dn_cs[p - 1:] - np.concatenate([[0.0], dn_cs[:-(p)]])
-    dn  = np.where(dn == 0, 1.0, dn)
-    mf  = 100.0 - 100.0 / (1.0 + num / dn)
-    return _sma((tci + mf + calc_rsi(s, PRESSURE_N3)) / 3.0, 6)
+def calc_mfi(h: np.ndarray, l: np.ndarray, c: np.ndarray,
+             v: np.ndarray, length: int = MFI_LEN) -> np.ndarray:
+    """Money Flow Index (Pine replica)."""
+    hlc3   = (h + l + c) / 3.0
+    raw_mf = hlc3 * v
+    hlc3_p = np.concatenate([[hlc3[0]], hlc3[:-1]])
+    pos_mf = _sma(np.where(hlc3 > hlc3_p, raw_mf, 0.0), length)
+    neg_mf = _sma(np.where(hlc3 < hlc3_p, raw_mf, 0.0), length)
+    ratio  = np.where(neg_mf == 0, 1.0, pos_mf / np.where(neg_mf == 0, 1.0, neg_mf))
+    return 100.0 - 100.0 / (1.0 + ratio)
+
+
+def calc_kvo(h: np.ndarray, l: np.ndarray, c: np.ndarray,
+             v: np.ndarray, fast: int = KVO_FAST, slow: int = KVO_SLOW) -> np.ndarray:
+    """Klinger Volume Oscillator (Pine replica)."""
+    n    = len(c)
+    hlc3 = (h + l + c) / 3.0
+    mom  = np.diff(hlc3, prepend=hlc3[0])
+    dm   = h - l
+    k_trend = np.zeros(n)
+    for i in range(1, n):
+        m = mom[i]
+        k_trend[i] = 1.0 if m > 0 else (-1.0 if m < 0 else k_trend[i - 1])
+    cm = np.zeros(n)
+    for i in range(1, n):
+        cm[i] = cm[i - 1] + dm[i] if k_trend[i] == k_trend[i - 1] else dm[i] + dm[i - 1]
+    safe_cm = np.where(cm != 0, cm, 1.0)
+    vf = np.where(cm != 0,
+                  100.0 * v * k_trend * np.abs(2.0 * dm / safe_cm - 1.0),
+                  0.0)
+    return _ema(vf, fast) - _ema(vf, slow)
+
+
+def calc_weis_wave(c: np.ndarray, trend_len: int = WEIS_LEN) -> np.ndarray:
+    """Weis Wave direction array (Pine replica). Returns +1=green, -1=red, 0=unset."""
+    n   = len(c)
+    mov = np.sign(np.diff(c, prepend=c[0])).astype(np.int8)
+    weis_trend = np.zeros(n, dtype=np.int8)
+    mov_prev   = np.concatenate([[np.int8(0)], mov[:-1]])
+    for i in range(1, n):
+        m = mov[i]
+        weis_trend[i] = int(m) if (m != 0 and m != mov_prev[i]) else weis_trend[i - 1]
+    diffs = np.diff(c, prepend=c[0])
+    pos   = diffs > 0
+    neg   = diffs < 0
+    if trend_len == 1:
+        is_trending = pos | neg
+    else:
+        is_rising  = pos.copy()
+        is_falling = neg.copy()
+        for j in range(1, trend_len):
+            is_rising[j:]  &= pos[:-j]   if j < n else np.zeros(n, bool)
+            is_falling[j:] &= neg[:-j]   if j < n else np.zeros(n, bool)
+            is_rising[:j]   = False
+            is_falling[:j]  = False
+        is_trending = is_rising | is_falling
+    wave = np.zeros(n, dtype=np.int8)
+    for i in range(1, n):
+        if weis_trend[i] != wave[i - 1] and is_trending[i]:
+            wave[i] = weis_trend[i]
+        else:
+            wave[i] = wave[i - 1]
+    return wave
+
+
+def calc_kwv_windows(h: np.ndarray, l: np.ndarray, c: np.ndarray,
+                     v: np.ndarray, dir_main: np.ndarray) -> tuple:
+    """
+    KWV state machines — Pine Script exact replica.
+    Returns (kwv_bull_win, kwv_bear_win) — bool arrays parallel to input.
+    """
+    n = len(c)
+    kvo  = calc_kvo(h, l, c, v)
+    mfi  = calc_mfi(h, l, c, v)
+    wave = calc_weis_wave(c)
+    kvo_above = kvo > 0;  kvo_below = kvo < 0
+    green_bar = wave == 1; red_bar   = wave == -1
+    wave_prev = np.concatenate([[np.int8(0)], wave[:-1]])
+    new_green = (wave == 1)  & (wave_prev != 1)
+    new_red   = (wave == -1) & (wave_prev != -1)
+    kwv_bull_win = np.zeros(n, bool)
+    kwv_bear_win = np.zeros(n, bool)
+    s_step = 0;  b_step = 0
+    kwv_bull = False;  kwv_bear = False
+    bull_r3  = False;  bear_r3  = False
+    for i in range(n):
+        sell_fired = False; buy_fired  = False
+        if dir_main[i] == -1:
+            if s_step == 0:
+                if kvo_below[i] and mfi[i] < MFI_OS: s_step = 1
+            elif s_step == 1:
+                if kvo_above[i] and mfi[i] > MFI_OB: s_step = 2
+            elif s_step == 2:
+                if kvo_below[i] and red_bar[i]: sell_fired = True; bear_r3 = True; s_step = 0
+        else:
+            s_step = 0; bear_r3 = False
+        if dir_main[i] == 1:
+            if b_step == 0:
+                if kvo_above[i] and mfi[i] > MFI_OB: b_step = 1
+            elif b_step == 1:
+                if kvo_below[i] and mfi[i] < MFI_OS: b_step = 2
+            elif b_step == 2:
+                if kvo_above[i] and green_bar[i]: buy_fired = True; bull_r3 = True; b_step = 0
+        else:
+            b_step = 0; bull_r3 = False
+        if b_step == 2: kwv_bull = True
+        if s_step == 2: kwv_bear = True
+        if kwv_bull and bull_r3 and not buy_fired  and new_green[i]: kwv_bull = False; bull_r3 = False
+        if kwv_bear and bear_r3 and not sell_fired and new_red[i]:   kwv_bear = False; bear_r3 = False
+        if dir_main[i] != 1:  kwv_bull = False; bull_r3 = False
+        if dir_main[i] != -1: kwv_bear = False; bear_r3 = False
+        kwv_bull_win[i] = kwv_bull
+        kwv_bear_win[i] = kwv_bear
+    return kwv_bull_win, kwv_bear_win
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2220,16 +2336,19 @@ def _calc_qm_strat2(h: np.ndarray, l: np.ndarray, c: np.ndarray, pp: int = 5):
     return bull_qm, bear_qm
 
 
-def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
-                      want_sell: bool,
-                      zz_len: int = 5, s2_pp: int = 5,
-                      ltf_zz_len=None, ltf_s2_pp=None):
+def signals_kwv_qm(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
+                   want_sell: bool,
+                   zz_len: int = 5, s2_pp: int = 5,
+                   ltf_zz_len=None, ltf_s2_pp=None):
     """
-    v34: QM + Pressure gate (replaces old signals_tf Pine Final Signal logic).
-    Window: pivot_win_ts (cur_P open = pivot fires) → pivot_end_ts (now).
+    v44: Pine Script QM + KWV Window Filter exact replica.
+    Replaces pressure-dot latch with the KWV 3-rule state machine window.
 
-    Pressure dot arms latch. TSL dirMain flip in wrong direction resets latch.
-    Chart-TF QM OR lower-TF QM fires while latch armed → valid signal, latch consumed.
+    Window gate (replaces pressure dot + latch):
+      BUY  allowed while kwvBullWindow open AND dir_main == +1
+      SELL allowed while kwvBearWindow open AND dir_main == -1
+
+    v45: one signal per KWV window cycle.
     Returns (found: bool, sig_ts_list: list[int], sig_kind_list: list[str])
     """
     h  = ds_sig.high.values;  l  = ds_sig.low.values
@@ -2239,21 +2358,20 @@ def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
 
     tsl_main, dir_main = f_swing(h, l, c, SWING_UTAMA)
     above_tsl = c > tsl_main; below_tsl = c < tsl_main
-    wt2 = calc_wt2(h, l, c, v)
 
-    # v39 FIX: gate on dir_main not above/below_tsl — at turning-point bars
-    # dir_main can be +1 (bullish) while close < tsl_main, producing a SELL
-    # dot inside a bullish TSL run.  dir_main is Pine's authoritative dirMain.
-    if want_sell: raw_p = (wt2 > 80) & (dir_main < 0)
-    else:         raw_p = (wt2 < 20) & (dir_main > 0)
-    pressure = np.zeros(n, bool)
-    pressure[1:] = raw_p[1:] & ~raw_p[:-1]
+    # KWV windows — replace pressure dot + latch
+    kwv_bull_win, kwv_bear_win = calc_kwv_windows(h, l, c, v, dir_main)
+
+    # Combined gate: TSL direction + KWV window
+    bull_allow = (dir_main == 1)  & kwv_bull_win
+    bear_allow = (dir_main == -1) & kwv_bear_win
+    allow      = bear_allow if want_sell else bull_allow
 
     s1_bull, s1_bear = _calc_qm_strat1(h, l, c, zz_len=zz_len)
     s2_bull, s2_bear = _calc_qm_strat2(h, l, c, pp=s2_pp)
-    qm_bull_sig = s1_bull | s2_bull; qm_bear_sig = s1_bear | s2_bear
-    qm_sig      = qm_bear_sig if want_sell else qm_bull_sig
-    qm_sig_filtered = qm_sig & (below_tsl if want_sell else above_tsl)
+    qm_bull = s1_bull | s2_bull; qm_bear = s1_bear | s2_bear
+    qm_sig  = qm_bear if want_sell else qm_bull
+    qm_sig_filtered = qm_sig & allow & (below_tsl if want_sell else above_tsl)
 
     ltf_bull_qm = np.empty(0, bool); ltf_bear_qm = np.empty(0, bool)
     ltf_ts      = np.empty(0, dtype=np.int64)
@@ -2272,28 +2390,36 @@ def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
     win_start = int(np.searchsorted(ts, pivot_win_ts))
     win_end   = int(np.searchsorted(ts, pivot_end_ts))
 
-    had_pressure  = False
     sig_ts_list:   list = []
     sig_kind_list: list = []
 
+    # v45: one signal per KWV window cycle.
+    signal_fired_this_window = False
+    prev_allow = bool(allow[win_start - 1]) if win_start > 0 else False
+
     for i in range(win_start, min(win_end, n - 1)):
-        # TSL direction flip → reset latch AND purge all collected signals.
-        # Signals formed before a wrong-direction flip are invalidated.
+        # TSL direction flip → purge all signals
         if i > 0 and dir_main[i] != dir_main[i - 1]:
             if want_sell and dir_main[i] > 0:
-                had_pressure = False
-                sig_ts_list.clear()
-                sig_kind_list.clear()
+                sig_ts_list.clear(); sig_kind_list.clear()
+                signal_fired_this_window = False
             if not want_sell and dir_main[i] < 0:
-                had_pressure = False
-                sig_ts_list.clear()
-                sig_kind_list.clear()
-        if pressure[i]:
-            had_pressure = True
-        if had_pressure and qm_sig_filtered[i]:
+                sig_ts_list.clear(); sig_kind_list.clear()
+                signal_fired_this_window = False
+
+        # Detect rising edge of allow → new window cycle opens
+        cur_allow = bool(allow[i])
+        if cur_allow and not prev_allow:
+            signal_fired_this_window = False
+        prev_allow = cur_allow
+
+        # Chart-TF QM fires inside KWV window — only the FIRST per window cycle
+        if qm_sig_filtered[i] and not signal_fired_this_window:
             sig_ts_list.append(int(ts[i])); sig_kind_list.append("QM")
-            had_pressure = False
-        if had_pressure and ltf_ts.size > 0:
+            signal_fired_this_window = True
+
+        # Lower-TF QM (MTF path) — fires while window open + TSL price side OK
+        if ltf_ts.size > 0 and allow[i] and not signal_fired_this_window:
             tsl_ok = below_tsl[i] if want_sell else above_tsl[i]
             if tsl_ok:
                 t_lo = int(ts[i])
@@ -2302,7 +2428,7 @@ def signals_pine_only(ds_sig, ds_lower, pivot_win_ts: int, pivot_end_ts: int,
                 if mask.any():
                     first_ltf = int(ltf_ts[np.where(mask)[0][0]])
                     sig_ts_list.append(first_ltf); sig_kind_list.append("MTF QM")
-                    had_pressure = False
+                    signal_fired_this_window = True
 
     return len(sig_ts_list) > 0, sig_ts_list, sig_kind_list
 
@@ -2637,198 +2763,13 @@ def calc_sma_cloud_bs_debug(h: np.ndarray, l: np.ndarray,
     return True, valid_from, len(sig_idxs), details
 
 
-def signals_tf(df: pd.DataFrame, from_ts: int = 0, want_sell: Optional[bool] = None):
-    """
-    Compute Pine-compatible Final Signal on a candle DataFrame.
-
-    Scan mode (want_sell=True/False): returns (found, sig_ts_list) — ALL signal timestamps.
-    Debug mode (want_sell=None): returns (buy_found, sell_found, buy_details, sell_details).
-
-    v14: single-side now collects ALL signal timestamps in window (not just first).
-    """
-    if len(df) < SWING_UTAMA + 10:
-        return (False, []) if want_sell is not None else (False, False, [], [])
-    h  = df.high.values
-    l  = df.low.values
-    c  = df.close.values
-    v  = df.volume.values
-    n  = len(c)
-    vf = _sma(v, VOL_FAST_LEN) > _sma(v, VOL_SLOW_LEN)
-    tsm, dir_main = f_swing(h, l, c, SWING_UTAMA)
-    tsa, _        = f_swing(h, l, c, SWING_ALT)
-    wt2 = calc_wt2(h, l, c, v)
-    above = c > tsm
-    below = c < tsm
-
-    ts_arr = df.ts.values.astype(np.int64)
-
-    raw_buy_p  = (wt2 < 20) & above
-    raw_sell_p = (wt2 > 80) & below
-    buy_pressure  = np.zeros(n, bool)
-    sell_pressure = np.zeros(n, bool)
-    buy_pressure[1:]  = raw_buy_p[1:]  & ~raw_buy_p[:-1]
-    sell_pressure[1:] = raw_sell_p[1:] & ~raw_sell_p[:-1]
-
-    cup = np.zeros(n, bool)
-    cdn = np.zeros(n, bool)
-    cup[1:] = (c[1:] > tsa[1:]) & (c[:-1] <= tsa[:-1])
-    cdn[1:] = (c[1:] < tsa[1:]) & (c[:-1] >= tsa[:-1])
-
-    end = n - 1
-    if from_ts > 0:
-        window_start = int(np.searchsorted(ts_arr[:end], from_ts))
-    else:
-        window_start = max(0, end - LOOKBACK_SIG)
-
-    if want_sell is not None:
-        last_p_bar  = -1
-        sig_ts_list: list = []   # v14: collect ALL signal timestamps
-
-        if want_sell:
-            for i in range(1, end):
-                if dir_main[i] == -1 and dir_main[i - 1] != -1: last_p_bar = -1
-                if sell_pressure[i]: last_p_bar = i
-                if (i >= window_start and last_p_bar >= 0 and cdn[i] and bool(vf[i]) and below[i]
-                        and dir_main[i] == -1):
-                    sig_ts_list.append(int(ts_arr[i]))
-                    last_p_bar = -1   # reset so next signal can arm
-                elif cdn[i] and bool(vf[i]) and below[i] and last_p_bar >= 0:
-                    last_p_bar = -1
-        else:
-            for i in range(1, end):
-                if dir_main[i] == 1 and dir_main[i - 1] != 1: last_p_bar = -1
-                if buy_pressure[i]: last_p_bar = i
-                if (i >= window_start and last_p_bar >= 0 and cup[i] and bool(vf[i]) and above[i]
-                        and dir_main[i] == 1):
-                    sig_ts_list.append(int(ts_arr[i]))
-                    last_p_bar = -1   # reset so next signal can arm
-                elif cup[i] and bool(vf[i]) and above[i] and last_p_bar >= 0:
-                    last_p_bar = -1
-
-        return (len(sig_ts_list) > 0, sig_ts_list)
-
-    # Debug mode — both sides
-    last_buy_p_bar  = -1
-    last_sell_p_bar = -1
-    final_buy  = np.zeros(n, bool)
-    final_sell = np.zeros(n, bool)
-    for i in range(1, end):
-        if dir_main[i] == 1  and dir_main[i - 1] != 1:  last_buy_p_bar  = -1
-        if dir_main[i] == -1 and dir_main[i - 1] != -1: last_sell_p_bar = -1
-        if buy_pressure[i]:  last_buy_p_bar  = i
-        if sell_pressure[i]: last_sell_p_bar = i
-        fb = cup[i] and bool(vf[i]) and above[i] and last_buy_p_bar  >= 0 and dir_main[i] == 1
-        fs = cdn[i] and bool(vf[i]) and below[i] and last_sell_p_bar >= 0 and dir_main[i] == -1
-        final_buy[i]  = fb
-        final_sell[i] = fs
-        if fb: last_buy_p_bar  = -1
-        if fs: last_sell_p_bar = -1
-
-    # v9q: w_mask and ts_arr must be same length (end, not n)
-    w_mask    = np.zeros(end, bool)
-    w_mask[window_start:] = True
-    ts_end    = df.ts.values[:end].astype(np.int64)
-    buy_idxs  = np.where(final_buy[:end]  & w_mask)[0]
-    sell_idxs = np.where(final_sell[:end] & w_mask)[0]
-
-    def _details(idxs):
-        return [(int(idx - window_start + 1), int(ts_end[idx])) for idx in idxs]
-    return (bool(buy_idxs.size > 0), bool(sell_idxs.size > 0),
-            _details(buy_idxs), _details(sell_idxs))
-
-
 # ══════════════════════════════════════════════════════════════════════
-#  v13: BOS / ChoCh CALCULATION  — Pine Script replica
-# ══════════════════════════════════════════════════════════════════════
-
-def calc_bos_choch(df: pd.DataFrame, left: int = BOS_LR, right: int = BOS_LR):
-    """
-    Compute BOS/ChoCh events matching Pine Script logic exactly.
-    Returns sorted list of (ts_ms: int, event_type: str).
-    event_type in: "bull_bos", "bull_choch", "bear_bos", "bear_choch"
-    """
-    h  = df.high.values
-    l  = df.low.values
-    c  = df.close.values
-    ts = df.ts.values.astype(np.int64)
-    n  = len(c)
-
-    events      = []
-    last_high   = np.nan
-    high_broken = True
-    last_low    = np.nan
-    low_broken  = True
-    break_type  = 0  # 0=none, 1=last bull, -1=last bear
-
-    for i in range(n):
-        mid = i - right
-        if mid >= left:
-            left_max  = np.max(h[mid - left : mid]) if mid - left < mid else -np.inf
-            right_sl  = h[mid + 1 : i + 1]
-            right_max = np.max(right_sl) if len(right_sl) > 0 else -np.inf
-            if h[mid] > left_max and h[mid] > right_max:
-                last_high   = h[mid]
-                high_broken = False
-
-            left_min  = np.min(l[mid - left : mid]) if mid - left < mid else np.inf
-            right_sl2 = l[mid + 1 : i + 1]
-            right_min = np.min(right_sl2) if len(right_sl2) > 0 else np.inf
-            if l[mid] < left_min and l[mid] < right_min:
-                last_low   = l[mid]
-                low_broken = False
-
-        if not np.isnan(last_high) and not high_broken:
-            if c[i] > last_high:
-                high_broken = True
-                etype       = "bull_choch" if break_type == -1 else "bull_bos"
-                events.append((int(ts[i]), etype))
-                break_type  = 1
-
-        if not np.isnan(last_low) and not low_broken:
-            if c[i] < last_low:
-                low_broken = True
-                etype      = "bear_choch" if break_type == 1 else "bear_bos"
-                events.append((int(ts[i]), etype))
-                break_type = -1
-
-    return sorted(events, key=lambda x: x[0])
-
-
-def validate_choch(events, signal_ts_ms: int, want_sell: bool) -> str:
-    """
-    Apply BOS/ChoCh validity rules to a confirmed Pine signal.
-    Returns one of: "valid", "invalid", "wait"
-    """
-    before = [(ts, et) for ts, et in events if ts <  signal_ts_ms]
-    after  = [(ts, et) for ts, et in events if ts >= signal_ts_ms]
-
-    if want_sell:
-        if before and before[-1][1] == "bear_choch":
-            return "valid"
-        if after:
-            first = after[0][1]
-            if first == "bear_choch":
-                return "valid"
-            if first == "bull_bos":
-                return "invalid"
-        return "wait"
-    else:
-        if before and before[-1][1] == "bull_choch":
-            return "valid"
-        if after:
-            first = after[0][1]
-            if first == "bull_choch":
-                return "valid"
-            if first == "bear_bos":
-                return "invalid"
-        return "wait"
-
-
+#  ASYNC FETCH WITH RETRY
 # ══════════════════════════════════════════════════════════════════════
 #  ASYNC FETCH WITH RETRY
 # ══════════════════════════════════════════════════════════════════════
 
-async def fetch_klines(sem, sym: str, tf: str, limit: int) -> np.ndarray | None:
+async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarray]:
     """
     v38 ⚡ Direct Binance Futures klines fetch — bypasses ccxt entirely.
 
@@ -3005,14 +2946,14 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     v38 Stage 3:
       3a — Cloud BS pullback gate on mid_tf (pure pass/fail).
            Window: pivot_win_ts (cur_P open = pivot fires) → pivot_end_ts (now).
-      3b — QM pressure-dot → latch → QM structure on sig_tf or lower_tf.
+      3b — QM signal gate on sig_tf or lower_tf.
 
     v38 changes vs v34:
       ⚡ All three TF fetches (mid_tf, sig_tf, choch_tf) fire concurrently.
       ⚡ Dynamic bar limits from actual pivot age (not hardcoded 165/270/80/95).
       FIX: exit validation — TSL flip check + KC anchor at oldest signal (first_sig_ts).
            Any tdi_tf KC breach from first_sig_ts to scan time drops the pair.
-    Returns (side_str, sym, detail, pivot_ts, "valid") or None.
+    Returns (side_str, sym, detail, pivot_ts) or None.
     """
     mid_tf   = cfg["mid_tf"]
     sig_tf   = cfg["sig_tf"]
@@ -3022,9 +2963,9 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
 
     # ── Dynamic bar limits based on actual pivot age ───────────────────────
     # v38 age gate caps pivot_win_ts to 48h (15M) / 8h (5M), so these limits
-    # only need to cover (pivot_win_ts → now) + indicator warmup (60 bars covers
-    # TSL-50, Bayesian-40, KC-20).  Binance klines API hard cap is 1500.
-    _WARMUP   = 60
+    # only need to cover (pivot_win_ts → now) + indicator warmup.
+    # v46: _WARMUP raised 60 → 200 — KVO EMA(slow=55) needs ~200 bars to converge.
+    _WARMUP   = 200
     _API_CAP  = 1500
     _tf_ms = {
         "1m":  60_000,   "3m":  180_000,  "5m":   300_000,
@@ -3070,7 +3011,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     if not cloud_ok:
         return None
 
-    # ── Stage 3b: QM pressure gate ────────────────────────────────────────
+    # ── Stage 3b: KWV QM gate ────────────────────────────────────────────
     # ⚡ Cloud BS passed — now fetch sig_tf + choch_tf concurrently (only survivors reach here)
     ds, dl = await asyncio.gather(
         fetch(ex, sem, sym, sig_tf,   sig_limit),
@@ -3087,7 +3028,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     # ⚡ offload to thread pool
     found, sig_ts_list, sig_kind_list = await _loop.run_in_executor(
         _CPU_POOL,
-        lambda: signals_pine_only(
+        lambda: signals_kwv_qm(
             ds, ds_lower, pivot_win_ts, pivot_end_ts, want_sell,
             ltf_zz_len=_ltf_zz, ltf_s2_pp=_ltf_pp))
 
@@ -3148,7 +3089,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     det = (f"{detail} | {mid_tf.upper()}_CloudBS✓({n_cloud}) {sig_tf.upper()}_QM✓ ({sig_label})"
            f" sig_kind={last_sig_kind}"
            f" sig_ts_ms={last_sig_ts} sig_price={last_sig_price:.8g}")
-    return (side, sym, det, pivot_ts, "valid")
+    return (side, sym, det, pivot_ts)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3201,7 +3142,7 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
 
         state = {
             "s1_done": 0, "s2_in": 0, "s3_in": 0,
-            "buy_valid": [], "buy_wait": [], "sell_valid": [], "sell_wait": [],
+            "buy_valid": [], "sell_valid": [],
             "total": total,
         }
         last_ui_update = 0.0
@@ -3232,14 +3173,12 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
 
             r3 = await stage3_worker(ex, sem, sym, want_sell, detail, pivot_ts, pivot_win_ts, pivot_end_ts, cfg, da)
             if r3:
-                side, sym2, det2, pt, choch_st = r3
-                entry = (sym2, det2, pt, choch_st)
+                side, sym2, det2, pt = r3
+                entry = (sym2, det2, pt)
                 if side == "BUY":
-                    if choch_st == "valid": state["buy_valid"].append(entry)
-                    else:                   state["buy_wait"].append(entry)
+                    state["buy_valid"].append(entry)
                 else:
-                    if choch_st == "valid": state["sell_valid"].append(entry)
-                    else:                   state["sell_wait"].append(entry)
+                    state["sell_valid"].append(entry)
                 progress_callback(state)
                 last_ui_update = time.time()
 
@@ -3406,7 +3345,8 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         is_5m_mode = sig_tf == "5m"
 
         # v38: dynamic bar limits based on actual pivot age (matches stage3_worker)
-        _WARMUP   = 60
+        # v46: _WARMUP raised 60 → 200 — KVO EMA(slow=55) needs ~200 bars to converge.
+        _WARMUP   = 200
         _API_CAP  = 1500
         _tf_ms_d = {
             "1m":  60_000,   "3m":  180_000,  "5m":   300_000,
@@ -3460,7 +3400,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         if not cloud_found:
             return logs
 
-        # ── Stage 3b: QM pressure gate (sig_tf + lower_tf) ───────────
+        # ── Stage 3b: KWV QM gate (sig_tf + lower_tf) ───────────
         ds, dl = await asyncio.gather(
             fetch(ex, sem, sym, sig_tf,   sig_limit),
             fetch(ex, sem, sym, choch_tf, ltf_limit),
@@ -3475,7 +3415,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
             f"{sig_tf}={len(ds)} bars  |  lower_tf={ltf_label}"))
 
         _is_5m = sig_tf == "5m"
-        found, sig_ts_list, sig_kind_list = signals_pine_only(
+        found, sig_ts_list, sig_kind_list = signals_kwv_qm(
             ds, ds_lower, pivot_win_ts, pivot_end_ts, want_sell,
             ltf_zz_len=10 if _is_5m else None,
             ltf_s2_pp =10 if _is_5m else None)
@@ -3592,11 +3532,10 @@ def _run_async(coro):
 
 
 def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
-               choch_status: str, now_ms: int, mode_key: str, timestamp: str,
+               now_ms: int, mode_key: str, timestamp: str,
                tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> dict:
     """
-    v18: Parse a result row into structured fields.
-    choch_status: "valid" or "wait"
+    Parse a result row into structured fields.
     tz_h: UTC offset in fractional hours for all timestamps
     """
     p      = _re.search(r"P=([\d.]+)",                    det)
@@ -3625,8 +3564,6 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
     else:
         price_str = ""
 
-    choch_label = "✅ VALID" if choch_status == "valid" else "⏳ WAIT"
-
     return {
         "Direction":      direction,
         "Symbol":         sym,
@@ -3638,7 +3575,6 @@ def _parse_row(direction: str, sym: str, det: str, pivot_ts: int,
         "Signal_TF":      sig_m.group(1)         if sig_m  else "",
         "Signal_Price":   price_str,
         "Signal_Time":    sig_dt,
-        "ChoCh":          choch_label,
         "Pivot_Age_h":    age_h,
         "Scan_Time":      timestamp,
         "Mode":           mode_key.upper(),
@@ -3736,9 +3672,7 @@ def _init_session():
         "scan_mode":    "15m",
         "df_final":     None,
         "buy_valid":    [],
-        "buy_wait":     [],
         "sell_valid":   [],
-        "sell_wait":    [],
         "csv_bytes":    None,
         "txt_bytes":    None,
         "csv_fname":    "",
@@ -3749,46 +3683,36 @@ def _init_session():
         "scan_now_ms":  0,
         "scan_timestamp": "",
         "buy_valid_full":  [],
-        "buy_wait_full":   [],
         "sell_valid_full": [],
-        "sell_wait_full":  [],
         "tz_key":       _tz_default,
         "time_fmt":     _tf_default,
+        "show_tz_panel": False,
+        "scan_mode_sel": "15m",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 
-def _sc_counters_html(nbv: int, nbw: int, nsv: int, nsw: int,
+def _sc_counters_html(nbv: int, nsv: int,
                       s2: int, s3: int, elapsed: float, total: int, done: int) -> str:
     spd = done / max(elapsed, 0.01)
     return f"""
 <div class="sc-counters">
   <div class="sc-cnt g">
-    <div class="cnt-lbl">BUY ✅ VALID</div>
+    <div class="cnt-lbl">BUY ✅</div>
     <div class="cnt-val">{nbv}</div>
   </div>
-  <div class="sc-cnt g">
-    <div class="cnt-lbl">BUY ⏳ WAIT</div>
-    <div class="cnt-val">{nbw}</div>
-    <div class="cnt-sub">ChoCh pending</div>
-  </div>
   <div class="sc-cnt r">
-    <div class="cnt-lbl">SELL ✅ VALID</div>
+    <div class="cnt-lbl">SELL ✅</div>
     <div class="cnt-val">{nsv}</div>
-  </div>
-  <div class="sc-cnt r">
-    <div class="cnt-lbl">SELL ⏳ WAIT</div>
-    <div class="cnt-val">{nsw}</div>
-    <div class="cnt-sub">ChoCh pending</div>
   </div>
   <div class="sc-cnt b">
     <div class="cnt-lbl">S2 Passed</div>
     <div class="cnt-val">{s2}</div>
   </div>
   <div class="sc-cnt b">
-    <div class="cnt-lbl">S3+S4 Pass</div>
+    <div class="cnt-lbl">S3 Passed</div>
     <div class="cnt-val">{s3}</div>
   </div>
   <div class="sc-cnt gy">
@@ -3799,17 +3723,15 @@ def _sc_counters_html(nbv: int, nbw: int, nsv: int, nsw: int,
 </div>"""
 
 
-def _sc_summary_html(total: int, elapsed: float, bv: int, bw: int,
-                     sv: int, sw: int, mode_key: str) -> str:
-    all_s = bv + bw + sv + sw
+def _sc_summary_html(total: int, elapsed: float, bv: int,
+                     sv: int, mode_key: str) -> str:
+    all_s = bv + sv
     spd   = total / max(elapsed, 0.01)
     return (
         f'<div class="sc-summary">'
         f'<span class="ss-title">&#9989; Scan <span>Complete</span></span>'
         f'<span class="ss-chip g">&#9650; BUY {bv}</span>'
-        f'<span class="ss-chip gd">&#9650; BUY WAIT {bw}</span>'
         f'<span class="ss-chip r">&#9660; SELL {sv}</span>'
-        f'<span class="ss-chip rd">&#9660; SELL WAIT {sw}</span>'
         f'<span class="ss-meta">'
         f'<b>{all_s}</b> signals &middot; {total} sym &middot; '
         f'{elapsed:.1f}s &middot; {spd:.0f}/s &middot; <b>{mode_key.upper()}</b>'
@@ -3862,44 +3784,13 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
 
 def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
                               tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> str:
-    """Render All tab as stacked sections: Confirmed above, Waiting below (no side-by-side)."""
-    # ── Confirmed section ─────────────────────────────────────────────
-    confirmed_parts = []
+    """Render All tab with BUY and SELL signal cards."""
+    parts = []
     if bv_list:
-        confirmed_parts.append(_signal_cards_html(bv_list, True,  True,  mode_key, "sc-grid", tz_h, tz_label, time_fmt))
+        parts.append(_signal_cards_html(bv_list, True,  True, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
     if sv_list:
-        confirmed_parts.append(_signal_cards_html(sv_list, False, True,  mode_key, "sc-grid", tz_h, tz_label, time_fmt))
-    conf_count = len(bv_list) + len(sv_list)
-    conf_section = (
-        f'<div class="sc-all-section">'
-        f'<div class="sc-col-header confirmed">&#9989; Confirmed &nbsp;'
-        f'<span style="opacity:0.7;font-weight:600">{conf_count}</span></div>'
-        + ("".join(confirmed_parts) if confirmed_parts else
-           '<div class="sc-empty" style="padding:0.8rem 1rem">'
-           '<div class="ico" style="font-size:1.3rem">&#128269;</div>'
-           '<p style="font-size:0.8rem">No confirmed signals</p></div>')
-        + '</div>'
-    )
-
-    # ── Waiting section ───────────────────────────────────────────────
-    waiting_parts = []
-    if bw_list:
-        waiting_parts.append(_signal_cards_html(bw_list, True,  False, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
-    if sw_list:
-        waiting_parts.append(_signal_cards_html(sw_list, False, False, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
-    wait_count = len(bw_list) + len(sw_list)
-    wait_section = (
-        f'<div class="sc-all-section" style="margin-top:1rem">'
-        f'<div class="sc-col-header waiting">&#9203; Waiting &nbsp;'
-        f'<span style="opacity:0.7;font-weight:600">{wait_count}</span></div>'
-        + ("".join(waiting_parts) if waiting_parts else
-           '<div class="sc-empty" style="padding:0.8rem 1rem">'
-           '<div class="ico" style="font-size:1.3rem">&#9203;</div>'
-           '<p style="font-size:0.8rem">No waiting signals</p></div>')
-        + '</div>'
-    )
-
-    return f'<div>{conf_section}{wait_section}</div>'
+        parts.append(_signal_cards_html(sv_list, False, True, mode_key, "sc-grid", tz_h, tz_label, time_fmt))
+    return "".join(parts) if parts else '<div class="sc-empty"><div class="ico">&#128269;</div><p>No signals.</p></div>'
 
 
 def main():
@@ -3928,15 +3819,12 @@ def main():
       <span class="dot">&bull;</span>
       Multi-Stage Pipeline
       <span class="dot">&bull;</span>
-      BOS/ChoCh Validated
-      <span class="dot">&bull;</span>
       Pine Accurate
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v43</span>
-    <span class="sc-badge green">&#10004; 4 Stages</span>
-    <span class="sc-badge gold">&#128336; BOS/ChoCh</span>
+    <span class="sc-badge blue">&#128640; v46</span>
+    <span class="sc-badge green">&#10004; 3 Stages</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
     <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
   </div>
@@ -4028,12 +3916,13 @@ def main():
                     "border:1px solid rgba(255,255,255,0.08);"
                 )
                 _dot = "🟢" if _is_active else "⚪"
+                _active_label = "&nbsp;<b style=\"color:#00e676\">ACTIVE</b>" if _is_active else " STANDBY"
                 _slot_chips.append(
                     f'<span style="display:inline-flex;align-items:center;gap:5px;'
                     f'padding:3px 10px;border-radius:20px;font-family:var(--mono);'
                     f'font-size:0.72rem;{_chip_style}">' 
                     f'{_dot} Slot {_i+1}: {_lbl}'
-                    f'{"&nbsp;<b style='color:#00e676'>ACTIVE</b>" if _is_active else " STANDBY"}'
+                    f'{_active_label}'
                     f'</span>'
                 )
             _chips_html = "&nbsp;".join(_slot_chips)
@@ -4063,9 +3952,6 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 """)
 
         # ── Mode + Timeframes row ─────────────────────────────────────
-        # Persist mode selection across reruns
-        if "scan_mode_sel" not in st.session_state:
-            st.session_state["scan_mode_sel"] = "15m"
         mode_key = st.session_state["scan_mode_sel"]
         cfg = MODES[mode_key]
 
@@ -4138,7 +4024,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             f"<span class='sc-pill-v2 s3'><span class='pill-num-v2'>S3a</span>"
             f"{cfg['mid_tf'].upper()} CloudBS gate</span>"
             f"<span class='sc-pill-v2 s4'><span class='pill-num-v2'>S3b</span>"
-            f"Pressure dot <span class='pill-arr-v2'>&#8594;</span> {cfg['sig_tf'].upper()}/{cfg['choch_tf'].upper()} QM</span>"
+            f"KWV window <span class='pill-arr-v2'>&#8594;</span> {cfg['sig_tf'].upper()}/{cfg['choch_tf'].upper()} QM</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -4161,7 +4047,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
         if scan_clicked:
             st.session_state.update({
                 "scan_done": False, "df_final": None,
-                "buy_valid": [], "buy_wait": [], "sell_valid": [], "sell_wait": [],
+                "buy_valid": [], "sell_valid": [],
                 "csv_bytes": None, "txt_bytes": None,
             })
             t0 = time.time()
@@ -4175,8 +4061,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 done    = state["s1_done"]
                 elapsed = time.time() - t0
                 pct     = done / max(total, 1)
-                all_s   = (len(state["buy_valid"]) + len(state["buy_wait"]) +
-                           len(state["sell_valid"]) + len(state["sell_wait"]))
+                all_s   = len(state["buy_valid"]) + len(state["sell_valid"])
                 spd = done / max(elapsed, 0.01)
                 prog_bar.progress(
                     min(pct, 1.0),
@@ -4185,8 +4070,8 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 )
                 ctr_ph.markdown(
                     _sc_counters_html(
-                        len(state["buy_valid"]), len(state["buy_wait"]),
-                        len(state["sell_valid"]), len(state["sell_wait"]),
+                        len(state["buy_valid"]),
+                        len(state["sell_valid"]),
                         state["s2_in"], state["s3_in"], elapsed, total, done),
                     unsafe_allow_html=True,
                 )
@@ -4243,9 +4128,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 elapsed    = time.time() - t0
                 total      = state["total"]
                 buy_valid  = sorted(state["buy_valid"],  key=lambda x: x[0])
-                buy_wait   = sorted(state["buy_wait"],   key=lambda x: x[0])
                 sell_valid = sorted(state["sell_valid"], key=lambda x: x[0])
-                sell_wait  = sorted(state["sell_wait"],  key=lambda x: x[0])
 
                 prog_bar.progress(1.0, text=f"Done — {total} symbols in {elapsed:.1f}s")
                 ctr_ph.empty()
@@ -4255,16 +4138,14 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 timestamp = _fmt_ts(now_ms, tz_h, tz_key, time_fmt)
 
                 all_results = (
-                    [("BUY",  s, d, p, c) for s, d, p, c in buy_valid] +
-                    [("BUY",  s, d, p, c) for s, d, p, c in buy_wait]  +
-                    [("SELL", s, d, p, c) for s, d, p, c in sell_valid] +
-                    [("SELL", s, d, p, c) for s, d, p, c in sell_wait]
+                    [("BUY",  s, d, p) for s, d, p in buy_valid] +
+                    [("SELL", s, d, p) for s, d, p in sell_valid]
                 )
 
                 if all_results:
                     all_rows = [
-                        _parse_row(dir_, s, d, p, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key, time_fmt)
-                        for dir_, s, d, p, choch_st in all_results
+                        _parse_row(dir_, s, d, p, now_ms, mode_key, timestamp, tz_h, tz_key, time_fmt)
+                        for dir_, s, d, p in all_results
                     ]
                     df_final = pd.DataFrame(all_rows)
                     csv_buf  = io.StringIO()
@@ -4277,25 +4158,22 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     txt_buf.write(f"Timezone  : {tz_key}\n")
                     txt_buf.write(f"Time Fmt  : {time_fmt.upper()}\n")
                     txt_buf.write(f"Symbols   : {total}  |  Elapsed : {elapsed:.1f}s\n")
-                    txt_buf.write(f"BUY  : {len(buy_valid)} VALID  {len(buy_wait)} WAIT\n")
-                    txt_buf.write(f"SELL : {len(sell_valid)} VALID  {len(sell_wait)} WAIT\n")
+                    txt_buf.write(f"BUY  : {len(buy_valid)}\n")
+                    txt_buf.write(f"SELL : {len(sell_valid)}\n")
                     txt_buf.write("=" * 72 + "\n")
                     for dir_, group_label, group in [
-                        ("BUY",  "BUY CONFIRMED",  buy_valid),
-                        ("BUY",  "BUY WAITING",    buy_wait),
-                        ("SELL", "SELL CONFIRMED", sell_valid),
-                        ("SELL", "SELL WAITING",   sell_wait),
+                        ("BUY",  "BUY",  buy_valid),
+                        ("SELL", "SELL", sell_valid),
                     ]:
                         if not group: continue
                         txt_buf.write(f"\n{'─'*28} {group_label} {'─'*28}\n")
-                        for sym, det, pts, choch_st in group:
-                            r = _parse_row(dir_, sym, det, pts, choch_st, now_ms, mode_key, timestamp, tz_h, tz_key, time_fmt)
+                        for sym, det, pts in group:
+                            r = _parse_row(dir_, sym, det, pts, now_ms, mode_key, timestamp, tz_h, tz_key, time_fmt)
                             txt_buf.write(
                                 f"  {r['Symbol']:<24}  Price={r['Signal_Price']}\n"
                                 f"  {'':24}  ADX peak={r['ADX_Peak']}  end={r['ADX_End']}  Age={r['Pivot_Age_h']}h\n"
                                 f"  {'':24}  BB={r['BB_TF']}  Signal={r['Signal_TF']}\n"
-                                f"  {'':24}  Pine Signal Time: {r['Signal_Time']}\n"
-                                f"  {'':24}  BOS/ChoCh: {r['ChoCh']}\n\n"
+                                f"  {'':24}  Pine Signal Time: {r['Signal_Time']}\n\n"
                             )
                     txt_bytes = txt_buf.getvalue().encode("utf-8")
 
@@ -4308,15 +4186,10 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "scan_now_ms":  now_ms,
                         "scan_timestamp": timestamp,
                         "df_final":     df_final,
-                        # Store full (sym, det, pts, choch) for sort-aware re-export
-                        "buy_valid":    [(s, d) for s, d, _, _ in buy_valid],
-                        "buy_wait":     [(s, d) for s, d, _, _ in buy_wait],
-                        "sell_valid":   [(s, d) for s, d, _, _ in sell_valid],
-                        "sell_wait":    [(s, d) for s, d, _, _ in sell_wait],
-                        "buy_valid_full":  [(s, d, p, c) for s, d, p, c in buy_valid],
-                        "buy_wait_full":   [(s, d, p, c) for s, d, p, c in buy_wait],
-                        "sell_valid_full": [(s, d, p, c) for s, d, p, c in sell_valid],
-                        "sell_wait_full":  [(s, d, p, c) for s, d, p, c in sell_wait],
+                        "buy_valid":    [(s, d) for s, d, _ in buy_valid],
+                        "sell_valid":   [(s, d) for s, d, _ in sell_valid],
+                        "buy_valid_full":  [(s, d, p) for s, d, p in buy_valid],
+                        "sell_valid_full": [(s, d, p) for s, d, p in sell_valid],
                     })
                 else:
                     st.session_state.update({
@@ -4325,7 +4198,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "scan_elapsed": elapsed,
                         "scan_mode":    mode_key,
                         "df_final":     None,
-                        "buy_valid": [], "buy_wait": [], "sell_valid": [], "sell_wait": [],
+                        "buy_valid": [], "sell_valid": [],
                     })
                 st.rerun()  # clean rerender — no stale placeholders above results
 
@@ -4344,21 +4217,19 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             r_time_fmt = st.session_state.get("time_fmt", TIME_FMT_DEFAULT)
 
             bv_list_raw = st.session_state["buy_valid"]
-            bw_list_raw = st.session_state["buy_wait"]
             sv_list_raw = st.session_state["sell_valid"]
-            sw_list_raw = st.session_state["sell_wait"]
-            bv, bw, sv, sw = len(bv_list_raw), len(bw_list_raw), len(sv_list_raw), len(sw_list_raw)
-            all_sigs = bv + bw + sv + sw
+            bv, sv = len(bv_list_raw), len(sv_list_raw)
+            all_sigs = bv + sv
 
             # Persistent summary banner
             st.markdown(
-                _sc_summary_html(total, elapsed, bv, bw, sv, sw, mode_key_r),
+                _sc_summary_html(total, elapsed, bv, sv, mode_key_r),
                 unsafe_allow_html=True)
 
             if all_sigs == 0:
                 st.markdown(
                     '<div class="sc-empty"><div class="ico">&#128301;</div>'
-                    '<p>No signals &mdash; market conditions did not meet all 4 stage filters.</p></div>',
+                    '<p>No signals &mdash; market conditions did not meet all 3 stage filters.</p></div>',
                     unsafe_allow_html=True)
             else:
                 # ── Sort / Filter control ─────────────────────────────
@@ -4401,27 +4272,23 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 st.markdown("<div style='margin-bottom:0.3rem'></div>",
                             unsafe_allow_html=True)
 
-                # Apply sort to all four lists
+                # Apply sort to both lists
                 cur_sort = st.session_state.get("results_sort", "newest")
                 bv_list = _sort_signals(bv_list_raw, cur_sort)
-                bw_list = _sort_signals(bw_list_raw, cur_sort)
                 sv_list = _sort_signals(sv_list_raw, cur_sort)
-                sw_list = _sort_signals(sw_list_raw, cur_sort)
 
                 # Signal card tabs — sticky (backed by session_state)
                 tab_labels = [
                     f"All ({all_sigs})",
-                    f"BUY Confirmed  {bv}",
-                    f"BUY Waiting  {bw}",
-                    f"SELL Confirmed  {sv}",
-                    f"SELL Waiting  {sw}",
+                    f"BUY  {bv}",
+                    f"SELL  {sv}",
                 ]
-                t_all, t_bv, t_bw, t_sv, t_sw = st.tabs(tab_labels)
+                t_all, t_bv, t_sv = st.tabs(tab_labels)
 
                 with t_all:
-                    if any([bv_list, sv_list, bw_list, sw_list]):
+                    if bv_list or sv_list:
                         st.markdown(
-                            _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key_r, r_tz_h, r_tz_key, r_time_fmt),
+                            _all_signals_two_col_html(bv_list, sv_list, [], [], mode_key_r, r_tz_h, r_tz_key, r_time_fmt),
                             unsafe_allow_html=True)
                     else:
                         st.markdown('<div class="sc-empty"><div class="ico">&#128269;</div><p>No signals.</p></div>',
@@ -4429,25 +4296,18 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                 with t_bv:
                     st.markdown(_signal_cards_html(bv_list, True, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
-                with t_bw:
-                    st.markdown(_signal_cards_html(bw_list, True, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
                 with t_sv:
                     st.markdown(_signal_cards_html(sv_list, False, True, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
-                with t_sw:
-                    st.markdown(_signal_cards_html(sw_list, False, False, mode_key_r, "sc-grid", r_tz_h, r_tz_key, r_time_fmt), unsafe_allow_html=True)
 
                 # Full table + export — rebuilt dynamically with current sort ──
                 _bv_full = st.session_state.get("buy_valid_full",  [])
-                _bw_full = st.session_state.get("buy_wait_full",   [])
                 _sv_full = st.session_state.get("sell_valid_full", [])
-                _sw_full = st.session_state.get("sell_wait_full",  [])
 
                 # Sort the full tuples the same way as the display lists
                 def _sort_full(lst, sk):
-                    """Sort (sym,det,pts,choch) tuples using same keys as _sort_signals."""
-                    import re as _re2
+                    """Sort (sym,det,pts) tuples using same keys as _sort_signals."""
                     def _ts(item):
-                        m = _re2.search(r"sig_ts_ms=(\d+)", item[1])
+                        m = _re.search(r"sig_ts_ms=(\d+)", item[1])
                         return int(m.group(1)) if m else 0
                     if sk == "oldest":   return sorted(lst, key=_ts)
                     if sk == "name_az":  return sorted(lst, key=lambda x: x[0])
@@ -4455,9 +4315,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     return sorted(lst, key=_ts, reverse=True)  # newest
 
                 _bv_s = _sort_full(_bv_full, cur_sort)
-                _bw_s = _sort_full(_bw_full, cur_sort)
                 _sv_s = _sort_full(_sv_full, cur_sort)
-                _sw_s = _sort_full(_sw_full, cur_sort)
 
                 _exp_now_ms    = st.session_state.get("scan_now_ms",    int(time.time()*1000))
                 _exp_timestamp = st.session_state.get("scan_timestamp", "")
@@ -4468,16 +4326,14 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                 # Build sorted export rows
                 _all_sorted = (
-                    [("BUY",  s, d, p, c) for s, d, p, c in _bv_s] +
-                    [("BUY",  s, d, p, c) for s, d, p, c in _bw_s]  +
-                    [("SELL", s, d, p, c) for s, d, p, c in _sv_s] +
-                    [("SELL", s, d, p, c) for s, d, p, c in _sw_s]
+                    [("BUY",  s, d, p) for s, d, p in _bv_s] +
+                    [("SELL", s, d, p) for s, d, p in _sv_s]
                 )
                 if _all_sorted:
                     _exp_rows = [
-                        _parse_row(dir_, s, d, p, ch, _exp_now_ms, mode_key_r,
+                        _parse_row(dir_, s, d, p, _exp_now_ms, mode_key_r,
                                    _exp_timestamp, r_tz_h, r_tz_key, r_time_fmt)
-                        for dir_, s, d, p, ch in _all_sorted
+                        for dir_, s, d, p in _all_sorted
                     ]
                     _df_sorted = pd.DataFrame(_exp_rows)
 
@@ -4494,41 +4350,37 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     _tbuf.write(f"Time Fmt  : {r_time_fmt.upper()}\n")
                     _tbuf.write(f"Sort      : {_sort_lbl}\n")
                     _tbuf.write(f"Symbols   : {total}  |  Elapsed : {elapsed:.1f}s\n")
-                    _tbuf.write(f"BUY  : {bv} VALID  {bw} WAIT\n")
-                    _tbuf.write(f"SELL : {sv} VALID  {sw} WAIT\n")
+                    _tbuf.write(f"BUY  : {bv}\n")
+                    _tbuf.write(f"SELL : {sv}\n")
                     _tbuf.write("=" * 72 + "\n")
                     for _dir, _glbl, _grp in [
-                        ("BUY",  "BUY CONFIRMED",  _bv_s),
-                        ("BUY",  "BUY WAITING",    _bw_s),
-                        ("SELL", "SELL CONFIRMED", _sv_s),
-                        ("SELL", "SELL WAITING",   _sw_s),
+                        ("BUY",  "BUY",  _bv_s),
+                        ("SELL", "SELL", _sv_s),
                     ]:
                         if not _grp: continue
                         _tbuf.write(f"\n{'─'*28} {_glbl} {'─'*28}\n")
-                        for _sym, _det, _pts, _cst in _grp:
-                            _r = _parse_row(_dir, _sym, _det, _pts, _cst,
+                        for _sym, _det, _pts in _grp:
+                            _r = _parse_row(_dir, _sym, _det, _pts,
                                             _exp_now_ms, mode_key_r, _exp_timestamp,
                                             r_tz_h, r_tz_key, r_time_fmt)
                             _tbuf.write(
                                 f"  {_r['Symbol']:<24}  Price={_r['Signal_Price']}\n"
                                 f"  {'':24}  ADX peak={_r['ADX_Peak']}  end={_r['ADX_End']}  Age={_r['Pivot_Age_h']}h\n"
                                 f"  {'':24}  BB={_r['BB_TF']}  Signal={_r['Signal_TF']}\n"
-                                f"  {'':24}  Pine Signal Time: {_r['Signal_Time']}\n"
-                                f"  {'':24}  BOS/ChoCh: {_r['ChoCh']}\n\n"
+                                f"  {'':24}  Pine Signal Time: {_r['Signal_Time']}\n\n"
                             )
                     _txt_bytes = _tbuf.getvalue().encode("utf-8")
 
                     if df_final is not None and not df_final.empty:
                         with st.expander("&#128203; Full Data Table + Export", expanded=False):
                             display_cols = [
-                                "Direction", "Symbol", "ChoCh", "Signal_Price",
+                                "Direction", "Symbol", "Signal_Price",
                                 "ADX_Peak", "ADX_End", "BB_TF", "Signal_TF",
                                 "Signal_Time", "Pivot_Age_h",
                             ]
                             col_cfg = {
                                 "Direction":    st.column_config.TextColumn("Dir",       width=85),
                                 "Symbol":       st.column_config.TextColumn("Symbol",    width=150),
-                                "ChoCh":        st.column_config.TextColumn("BOS/ChoCh", width=100),
                                 "Signal_Price": st.column_config.TextColumn("Price",     width=100),
                                 "ADX_Peak":     st.column_config.NumberColumn("ADX Pk",  format="%.1f", width=75),
                                 "ADX_End":      st.column_config.NumberColumn("ADX End", format="%.1f", width=75),
@@ -4588,9 +4440,8 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 "<span class='sc-stage-dot dot-2'>S2</span> TDI RSI fast/slow direction<br>"
                 "<span class='sc-stage-dot dot-2'>S2</span> Keltner Channel band position<br>"
                 "<span class='sc-stage-dot dot-2'>S2</span> Last-15-bar band cleanness<br>"
-                "<span class='sc-stage-dot dot-3'>S3</span> BB continuation pullback<br>"
-                "<span class='sc-stage-dot dot-3'>S3</span> Pine Final Signal + timestamps<br>"
-                "<span class='sc-stage-dot dot-4'>S4</span> BOS/ChoCh validation (lower TF)"
+                "<span class='sc-stage-dot dot-3'>S3</span> KWV window gate (R1→R2→R3)<br>"
+                "<span class='sc-stage-dot dot-3'>S3</span> QM Strat1/Strat2 + timestamps"
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -4625,13 +4476,8 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 )
 
                 last = logs[-1]
-                if "INVALID" in last[1]:
-                    st.error(f"Signal INVALIDATED at {last[0]} — opposite BOS appeared after signal")
-                elif "WAIT" in last[1]:
-                    st.warning(f"Signal WAITING — {last[0]}: no decisive BOS/ChoCh event yet")
-                    st.caption(f"Detail: {last[2]}")
-                elif "PASS" in last[1] or "VALID" in last[1]:
-                    st.success("All stages passed — Signal confirmed with BOS/ChoCh validation")
+                if "PASS" in last[1] or "VALID" in last[1]:
+                    st.success("All stages passed — Signal confirmed")
                 else:
                     st.error(f"Failed at {last[0]}")
                     st.caption(f"Detail: {last[2]}")
