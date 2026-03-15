@@ -992,8 +992,8 @@ st.markdown("""
   /* ── Signal cards ────────────────────────────────────────────────── */
   .sc-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 8px;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 9px;
     margin: 0.3rem 0 0.5rem;
   }
 
@@ -1037,25 +1037,33 @@ st.markdown("""
     border-radius: 10px;
     border: 1px solid var(--border2);
     background: var(--surface);
-    padding: 0.55rem 0.7rem 0.5rem;
+    padding: 0.6rem 0.72rem 0.55rem;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
     position: relative;
     cursor: pointer;
     transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
+    overflow: hidden;
   }
   .sc-card:hover, .sc-card:active {
     transform: translateY(-3px) scale(1.02);
   }
 
-  /* BUY confirmed — vivid green glow */
+  /* BUY confirmed — vivid green glow + top stripe */
   .sc-card.buy {
     border-left: 3px solid var(--green);
     background: linear-gradient(135deg, rgba(0,230,118,0.06) 0%, rgba(15,15,21,1) 60%);
     box-shadow: 0 0 0 0 rgba(0,230,118,0);
+  }
+  .sc-card.buy::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--green), transparent);
+    border-radius: 10px 10px 0 0;
   }
   .sc-card.buy:hover, .sc-card.buy:active {
     border-color: var(--green);
@@ -1063,11 +1071,18 @@ st.markdown("""
     box-shadow: 0 6px 28px rgba(0,230,118,0.22), 0 2px 8px rgba(0,0,0,0.4);
   }
 
-  /* SELL confirmed — vivid red glow */
+  /* SELL confirmed — vivid red glow + top stripe */
   .sc-card.sell {
     border-left: 3px solid var(--red);
     background: linear-gradient(135deg, rgba(255,64,96,0.06) 0%, rgba(15,15,21,1) 60%);
     box-shadow: 0 0 0 0 rgba(255,64,96,0);
+  }
+  .sc-card.sell::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--red), transparent);
+    border-radius: 10px 10px 0 0;
   }
   .sc-card.sell:hover, .sc-card.sell:active {
     border-color: var(--red);
@@ -1192,6 +1207,62 @@ st.markdown("""
     text-overflow: ellipsis;
   }
   .sc-card-info b { color: var(--text2); font-weight: 600; }
+
+  /* Row 4 — ADX · age · kind */
+  .sc-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 2px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+  .sc-adx {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    background: rgba(255,255,255,0.04);
+    color: var(--muted);
+  }
+  .sc-adx.adx-hi  { background: rgba(0,230,118,0.1);  color: var(--green); }
+  .sc-adx.adx-med { background: rgba(255,202,40,0.1); color: var(--gold); }
+  .sc-adx.adx-lo  { background: rgba(255,255,255,0.04); color: var(--muted); }
+  .sc-age {
+    font-family: var(--mono);
+    font-size: 0.60rem;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+  }
+  .sc-kind-badge {
+    font-family: var(--mono);
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+  .sc-kind-badge.qm  { background: rgba(0,180,216,0.1); color: var(--blue); border: 1px solid rgba(0,180,216,0.2); }
+  .sc-kind-badge.mtf { background: rgba(167,139,250,0.1); color: #a78bfa; border: 1px solid rgba(167,139,250,0.25); }
+
+  /* Summary funnel display */
+  .ss-funnel {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    padding: 2px 9px;
+    border-radius: 20px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
 
   /* Pulse dot for confirmed cards */
   .sc-card-pulse {
@@ -1445,6 +1516,10 @@ st.markdown("""
     .sc-card-price { font-size: 0.92rem !important; }
     .sc-card-info  { font-size: 0.6rem !important; }
     .sc-card-dir   { font-size: 0.6rem !important; padding: 2px 5px !important; }
+    .sc-card-meta  { gap: 3px !important; }
+    .sc-adx        { font-size: 0.56rem !important; }
+    .sc-age        { font-size: 0.54rem !important; }
+    .sc-kind-badge { font-size: 0.52rem !important; }
 
     /* ── Summary banner ───────────────────────── */
     .sc-summary {
@@ -1794,8 +1869,7 @@ st.markdown("""
   .sc-pill-v2.s4 .pill-num-v2 { background: rgba(248,113,113,0.15); color: #f87171; }
   .pill-arr-v2 { color: var(--border2); font-weight: 700; }
 
-  /* ── Settings panel (gear toggle) ───────────────────────────────── */
-  .sc-settings-panel {
+  /* ── Settings panel (gear toggle) ───────────────────────────────── */  .sc-settings-panel {
     background: var(--surface);
     border: 1px solid var(--border2);
     border-radius: var(--radius);
@@ -1817,66 +1891,22 @@ st.markdown("""
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* ── Sort / Filter control ───────────────────────────────────────── */
-  .sc-sort-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0 0 0.7rem;
-  }
-  .sc-sort-icon-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 5px 13px 5px 10px;
-    border-radius: 20px;
-    border: 1px solid var(--border2);
-    background: var(--surface2);
-    font-size: 0.76rem;
-    font-weight: 700;
-    color: var(--text2);
-    font-family: var(--mono);
-    white-space: nowrap;
-    letter-spacing: 0.04em;
-  }
-  .sc-sort-icon-pill.active {
-    background: rgba(0,180,216,0.1);
-    border-color: rgba(0,180,216,0.45);
-    color: var(--blue);
-    box-shadow: 0 0 10px rgba(0,180,216,0.12);
-  }
-  /* Make the selectbox inline and compact — flush with pill */
-  .sc-sort-select [data-testid="stSelectbox"] {
-    margin: 0 !important;
-  }
-  .sc-sort-select [data-testid="stSelectbox"] > div > div {
-    background: var(--surface2) !important;
-    border: 1px solid var(--border2) !important;
+  /* ── Sort pill buttons ───────────────────────────────────────────── */
+  .sc-sort-wrap [data-testid="stButton"] > button {
     border-radius: 20px !important;
-    padding: 4px 14px !important;
-    min-height: 34px !important;
-    font-size: 0.76rem !important;
+    font-size: 0.78rem !important;
     font-weight: 600 !important;
-    color: var(--text2) !important;
+    padding: 0.3rem 0.7rem !important;
+    min-height: 34px !important;
+    height: 34px !important;
     font-family: var(--mono) !important;
-    transition: border-color 0.15s, box-shadow 0.15s !important;
-    cursor: pointer !important;
   }
-  .sc-sort-select [data-testid="stSelectbox"] > div > div:hover {
-    border-color: rgba(0,180,216,0.5) !important;
-    color: var(--blue) !important;
-  }
-  /* Hide the label */
-  .sc-sort-select label { display: none !important; }
-  /* Mobile — make select full-touch-friendly */
   @media (max-width: 640px) {
-    .sc-sort-row { gap: 6px !important; margin: 0 0 0.5rem !important; }
-    .sc-sort-icon-pill { font-size: 0.7rem !important; padding: 5px 10px 5px 8px !important; }
-    .sc-sort-select [data-testid="stSelectbox"] > div > div {
-      font-size: 0.78rem !important;
-      min-height: 40px !important;
-      padding: 6px 14px !important;
-      border-radius: 20px !important;
+    .sc-sort-wrap [data-testid="stButton"] > button {
+      font-size: 0.7rem !important;
+      padding: 0.3rem 0.4rem !important;
+      min-height: 38px !important;
+      height: 38px !important;
     }
   }
 </style>
@@ -3928,12 +3958,15 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, tim
     ADX_peak if cur is unavailable — matches v21 CLI _parse_det() behavior.
     """
     # v21 FIX: prefer ADX_cur (current value) over ADX_peak (historical peak)
-    adx    = _re.search(r"ADX_cur=([\d.]+)",   det) or _re.search(r"ADX_peak=([\d.]+)", det)
-    bb_m   = _re.search(r"(\w+)_CloudBS",               det)
-    sig_m  = _re.search(r"\[(\w+)_QM",                    det)
-    sig_ts = _re.search(r"sig_ts_ms=(\d+)",               det)
-    sig_px = _re.search(r"sig_price=([\d.eE+\-]+)",       det)
-    n_sigs = _re.search(r"\((\d+) sig",                   det)
+    adx      = _re.search(r"ADX_cur=([\d.]+)",        det) or _re.search(r"ADX_peak=([\d.]+)", det)
+    adx_pk   = _re.search(r"ADX_peak=([\d.]+)",       det)
+    bb_m     = _re.search(r"(\w+)_CloudBS",           det)
+    sig_m    = _re.search(r"\[(\w+)_QM",              det)
+    sig_ts   = _re.search(r"sig_ts_ms=(\d+)",         det)
+    sig_px   = _re.search(r"sig_price=([\d.eE+\-]+)", det)
+    n_sigs   = _re.search(r"\((\d+) sig",             det)
+    kind_m   = _re.search(r"sig_kind=(\w+)",          det)
+    cloud_m  = _re.search(r"CloudBS\u2713\((\d+)\)",  det)
 
     # Price formatting
     if sig_px:
@@ -3949,25 +3982,33 @@ def _parse_det_card(det: str, tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, tim
     if sig_ts:
         age_ms  = int(time.time() * 1000) - int(sig_ts.group(1))
         age_h   = age_ms / 3_600_000
-        if age_h < 1:   age_str = f"{age_h*60:.0f}m"
-        elif age_h < 24: age_str = f"{age_h:.1f}h"
-        else:            age_str = f"{age_h/24:.1f}d"
+        if age_h < 1:    age_str = f"{age_h*60:.0f}m ago"
+        elif age_h < 24: age_str = f"{age_h:.1f}h ago"
+        else:            age_str = f"{age_h/24:.1f}d ago"
         sig_time = _fmt_ts(int(sig_ts.group(1)), tz_h, tz_label, time_fmt)
     else:
         age_h = 0.0; age_str = "—"; sig_time = "—"
 
-    # ADX value — v20 FIX: simplified redundant return expression
-    adx_v = f"{float(adx.group(1)):.0f}" if adx else "—"
+    # ADX values
+    adx_v    = f"{float(adx.group(1)):.0f}"    if adx    else "—"
+    adx_pk_v = f"{float(adx_pk.group(1)):.0f}" if adx_pk else adx_v
+
+    # Signal kind label — "MTF" → "MTF QM", "QM" → "QM"
+    raw_kind = kind_m.group(1) if kind_m else "QM"
+    sig_kind = "MTF QM" if raw_kind == "MTF" else "QM"
 
     return {
-        "price":  price_str,
-        "adx":    adx_v,
-        "bb_tf":  bb_m.group(1).upper()  if bb_m  else "—",
-        "sig_tf": sig_m.group(1).upper() if sig_m else "—",
-        "age_str": age_str,
-        "age_h":   str(age_h),
+        "price":    price_str,
+        "adx":      adx_v,
+        "adx_peak": adx_pk_v,
+        "bb_tf":    bb_m.group(1).upper()  if bb_m   else "—",
+        "sig_tf":   sig_m.group(1).upper() if sig_m  else "—",
+        "age_str":  age_str,
+        "age_h":    str(age_h),
         "sig_time": sig_time,
-        "n_sigs": n_sigs.group(1) if n_sigs else "1",
+        "n_sigs":   n_sigs.group(1) if n_sigs else "1",
+        "sig_kind": sig_kind,
+        "n_cloud":  cloud_m.group(1) if cloud_m else "—",
     }
 
 
@@ -4077,18 +4118,22 @@ def _sc_counters_html(nbv: int, nsv: int, nbw: int, nsw: int,
 
 
 def _sc_summary_html(total: int, elapsed: float, bv: int,
-                     sv: int, bw: int, sw: int, mode_key: str) -> str:
+                     sv: int, bw: int, sw: int, mode_key: str,
+                     s2: int = 0, s3: int = 0) -> str:
     all_s = bv + sv + bw + sw
     spd   = total / max(elapsed, 0.01)
+    confirmed = bv + sv
+    waiting   = bw + sw
+    funnel = f"{total}&thinsp;→&thinsp;{s2}&thinsp;→&thinsp;{s3}&thinsp;→&thinsp;<b style='color:var(--gold)'>{all_s}</b>" if s2 or s3 else f"{total} sym"
     return (
         f'<div class="sc-summary">'
         f'<span class="ss-title">&#9989; Scan <span>Complete</span></span>'
         f'<span class="ss-chip g">&#9650; BUY {bv}</span>'
         f'<span class="ss-chip r">&#9660; SELL {sv}</span>'
-        + (f'<span class="ss-chip gd">&#9650;&#8987; WAIT {bw}</span>' if bw else '')
-        + (f'<span class="ss-chip rd">&#9660;&#8987; WAIT {sw}</span>' if sw else '')
+        + (f'<span class="ss-chip gd">&#9650;&#8987; {bw}</span>' if bw else '')
+        + (f'<span class="ss-chip rd">&#9660;&#8987; {sw}</span>' if sw else '')
+        + f'<span class="ss-funnel">{funnel}</span>'
         + f'<span class="ss-meta">'
-        f'<b>{all_s}</b> signals &middot; {total} sym &middot; '
         f'{elapsed:.1f}s &middot; {spd:.0f}/s &middot; <b>{mode_key.upper()}</b>'
         f'</span>'
         f'</div>'
@@ -4098,13 +4143,12 @@ def _sc_summary_html(total: int, elapsed: float, bv: int,
 def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: str = "15m",
                        grid_cls: str = "sc-grid",
                        tz_h: float = 0.0, tz_label: str = TZ_DEFAULT, time_fmt: str = "24h") -> str:
-    """Compact cards: symbol | price | TF | signal time | direction."""
+    """Rich signal cards: symbol | direction | price | time | ADX · age · kind."""
     if not entries:
         label = ("BUY" if is_buy else "SELL") + (" confirmed" if is_valid else " waiting")
         return f'<div class="sc-empty"><div class="ico">&#128269;</div><p>No {label} signals.</p></div>'
 
     card_cls = ("buy" if is_buy else "sell") + ("" if is_valid else " wait")
-    tf_label  = mode_key.upper()   # "15M" or "5M"
 
     if is_buy and is_valid:
         dir_cls, dir_txt = "dir-buy",    "&#9650; BUY"
@@ -4119,19 +4163,41 @@ def _signal_cards_html(entries: list, is_buy: bool, is_valid: bool, mode_key: st
 
     cards = []
     for sym, det in entries:
-        p     = _parse_det_card(det, tz_h, tz_label, time_fmt)
-        # Extract bare base name: "BERA/USDT:USDT" → "BERA"
-        base  = sym.split("/")[0].replace("USDT", "").replace("BUSD", "").replace("USD", "")
-        if not base:  # fallback if already bare
-            base = sym.split("/")[0]
+        p    = _parse_det_card(det, tz_h, tz_label, time_fmt)
+        base = sym.split("/")[0].replace("USDT", "").replace("BUSD", "").replace("USD", "") or sym.split("/")[0]
+
+        # Kind badge: MTF QM gets special treatment
+        kind_badge = (
+            '<span class="sc-kind-badge mtf">MTF</span>'
+            if p["sig_kind"] == "MTF QM"
+            else '<span class="sc-kind-badge qm">QM</span>'
+        )
+
+        # ADX color class
+        try:
+            adx_val = float(p["adx"])
+            adx_cls = "adx-hi" if adx_val >= 40 else ("adx-med" if adx_val >= 25 else "adx-lo")
+        except (ValueError, TypeError):
+            adx_cls = ""
+
         cards.append(
             f'<div class="sc-card {card_cls}">'
+            # Row 1: symbol + direction badge
             f'<div class="sc-card-row1">'
             f'<span class="sc-card-sym">{base}{pulse}</span>'
             f'<span class="sc-card-dir {dir_cls}">{dir_txt}</span>'
             f'</div>'
+            # Row 2: price
             f'<div class="sc-card-price">{p["price"]}</div>'
-            f'<div class="sc-card-info"><b>{tf_label}</b> &nbsp;{p["sig_time"]}</div>'
+            # Row 3: signal time
+            f'<div class="sc-card-info"><b>{p["sig_tf"] if p["sig_tf"] != "—" else mode_key.upper()}</b>'
+            f'&nbsp;{p["sig_time"]}</div>'
+            # Row 4: ADX · age · kind
+            f'<div class="sc-card-meta">'
+            f'<span class="sc-adx {adx_cls}">ADX&nbsp;{p["adx"]}</span>'
+            f'<span class="sc-age">{p["age_str"]}</span>'
+            f'{kind_badge}'
+            f'</div>'
             f'</div>'
         )
     return f'<div class="{grid_cls}">{"".join(cards)}</div>'
@@ -4599,7 +4665,8 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
             # Persistent summary banner
             st.markdown(
-                _sc_summary_html(total, elapsed, bv, sv, bw, sw, mode_key_r),
+                _sc_summary_html(total, elapsed, bv, sv, bw, sw, mode_key_r,
+                                 s2=state.get("s2_in", 0), s3=state.get("s3_in", 0)),
                 unsafe_allow_html=True)
 
             if all_sigs == 0:
@@ -4608,42 +4675,28 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     '<p>No signals &mdash; market conditions did not meet all 3 stage filters.</p></div>',
                     unsafe_allow_html=True)
             else:
-                # ── Sort / Filter control ─────────────────────────────
+                # ── Sort control — pill buttons ───────────────────────
                 cur_sort = st.session_state.get("results_sort", "newest")
-                _sort_options = {
-                    "🕐  Newest first": "newest",
-                    "🕛  Oldest first": "oldest",
-                    "🔤  Name A → Z":   "name_az",
-                    "🔡  Name Z → A":   "name_za",
-                }
-                _sort_labels  = list(_sort_options.keys())
-                _sort_cur_lbl = next(
-                    (k for k, v in _sort_options.items() if v == cur_sort),
-                    _sort_labels[0]
-                )
-                _is_non_default = cur_sort != "newest"
-                pill_cls = "sc-sort-icon-pill active" if _is_non_default else "sc-sort-icon-pill"
-
-                _scol_icon, _scol_sel = st.columns([1, 3])
-                with _scol_icon:
-                    st.markdown(
-                        f"<div class='{pill_cls}' style='margin-top:6px'>"
-                        f"&#9651; Sort</div>",
-                        unsafe_allow_html=True)
-                with _scol_sel:
-                    st.markdown("<div class='sc-sort-select'>", unsafe_allow_html=True)
-                    _new_sort_lbl = st.selectbox(
-                        "sort_select_label",
-                        _sort_labels,
-                        index=_sort_labels.index(_sort_cur_lbl),
-                        key="sort_selectbox",
-                        label_visibility="collapsed",
-                    )
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    _new_sort_key = _sort_options[_new_sort_lbl]
-                    if _new_sort_key != cur_sort:
-                        st.session_state["results_sort"] = _new_sort_key
-                        st.rerun()
+                _sort_opts = [
+                    ("🕐 Newest", "newest"),
+                    ("🕛 Oldest", "oldest"),
+                    ("🔤 A→Z",    "name_az"),
+                    ("🔡 Z→A",    "name_za"),
+                ]
+                st.markdown("<div class='sc-sort-wrap'>", unsafe_allow_html=True)
+                _scols = st.columns(len(_sort_opts))
+                for (_slbl, _skey), _scol in zip(_sort_opts, _scols):
+                    with _scol:
+                        _is_active = cur_sort == _skey
+                        if st.button(
+                            _slbl, key=f"sort_btn_{_skey}", width="stretch",
+                            type="primary" if _is_active else "secondary"
+                        ):
+                            if _skey != cur_sort:
+                                st.session_state["results_sort"] = _skey
+                                st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+                _sort_lbl = next(l for l, k in _sort_opts if k == cur_sort)
 
                 st.markdown("<div style='margin-bottom:0.3rem'></div>",
                             unsafe_allow_html=True)
