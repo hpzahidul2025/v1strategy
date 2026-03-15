@@ -517,7 +517,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v54",
+    page_title="Binance Futures Scanner v55",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -3227,7 +3227,10 @@ async def stage1_worker(ex, sem, sym: str, cfg: dict):
     adx_peak = float(np.nanmax(valid_window))
     det = (f"P={cur_P:.5f} "
            f"{'prev_peak' if want_sell else 'prev_trough'}={prev_P:.5f} "
-           f"ADX_cur={adx_at_window_end:.1f} ADX_peak={adx_peak:.1f}")
+           f"ADX_cur={adx_at_window_end:.1f} "
+           f"ADX_peak={adx_peak:.1f} "
+           f"pivot_confirmed_ts_ms={pivot_confirmed_ts} "
+           f"pivot_ts_ms={pivot_ts}")
     return (want_sell, sym, det, pivot_ts, pivot_win_ts, pivot_end_ts, da)
 
 
@@ -4181,7 +4184,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v54</span>
+    <span class="sc-badge blue">&#128640; v55</span>
     <span class="sc-badge green">&#10004; 3 Stages</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
     <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
