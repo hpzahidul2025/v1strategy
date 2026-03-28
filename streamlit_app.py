@@ -510,6 +510,232 @@ def _tg_send_signals(
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  BACKGROUND SCHEDULER  v57
+#
+#  Runs completely independently of any browser/Streamlit session.
+#  • Started once per process via _start_bg_scheduler() (called from main()).
+#  • Fires 15M + 5M scans every 15 min, clock-aligned to :00/:15/:30/:45 UTC.
+#  • Uses a module-level market cache (_bg_cache) — no st.session_state.
+#  • Deduplicates signals globally (_bg_seen) so each signal fires once.
+#  • Sends Telegram via the existing _tg_send_signals() helper.
+#  • Status readable by the UI via _bg_status dict (thread-safe via _bg_lock).
+# ══════════════════════════════════════════════════════════════════════
+import threading as _threading
+import datetime  as _dt
+
+_bg_cache: dict = {}          # module-level market/proxy cache
+_bg_seen:  set  = set()       # dedup: (symbol, sig_ts_ms_str, mode)
+_bg_lock   = _threading.Lock()
+_bg_status: dict = {
+    "last_run":     "Never",
+    "last_mode":    "—",
+    "last_signals": 0,
+    "next_run":     "—",
+    "running":      False,
+    "error":        "",
+}
+_bg_thread_started = False
+
+
+def _bg_next_quarter(now: float) -> float:
+    """Return UTC unix timestamp of the next :00/:15/:30/:45 boundary."""
+    import math
+    return math.ceil(now / 900) * 900   # 900 s = 15 min
+
+
+async def _bg_run_one_async(mode_key: str) -> dict:
+    """
+    Self-contained scan coroutine for the background thread.
+    Mirrors run_scan() but uses _bg_cache instead of st.session_state,
+    and accepts no progress_callback (headless — no UI to update).
+    """
+    global _http_session, _http_proxy, _proxy_list, _proxy_idx, _proxy_lock
+
+    cfg     = MODES[mode_key]
+    proxies = _get_all_proxies()
+
+    # ── Market cache (module-level, survives across scans) ──────────
+    if "markets" not in _bg_cache:
+        ex, active_proxy, proxy_idx = await _try_load_markets(proxies)
+        _bg_cache["markets"]          = ex.markets
+        _bg_cache["active_proxy"]     = active_proxy
+        _bg_cache["active_proxy_idx"] = proxy_idx
+    else:
+        active_proxy = _bg_cache.get("active_proxy", proxies[0] if proxies else "")
+        proxy_idx    = _bg_cache.get("active_proxy_idx", 0)
+        ex = _make_exchange_with_proxy(active_proxy)
+        ex.markets = _bg_cache["markets"]
+        ex.markets_by_id = {m["id"]: m for m in ex.markets.values()}
+
+    # ── Shared aiohttp session (same setup as run_scan) ─────────────
+    _scan_connector = aiohttp.TCPConnector(
+        limit=200, keepalive_timeout=30, ttl_dns_cache=600,
+        resolver=aiohttp.ThreadedResolver(),
+    )
+    _scan_session = aiohttp.ClientSession(
+        connector=_scan_connector,
+        timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
+    )
+    _http_session = _scan_session
+    _http_proxy   = active_proxy if active_proxy else None
+    _proxy_list   = proxies
+    _proxy_idx    = proxy_idx
+    _proxy_lock   = asyncio.Lock()
+
+    try:
+        symbols = sorted([
+            s for s, m in ex.markets.items()
+            if m.get("type") == "swap" and m.get("active")
+            and m.get("quote") == "USDT" and ":USDT" in s
+        ])
+        total = len(symbols)
+        sem   = asyncio.Semaphore(MAX_CONCURRENT)
+        state = {
+            "s1_done": 0, "s2_in": 0, "s3_in": 0,
+            "buy_valid": [], "sell_valid": [],
+            "buy_wait":  [], "sell_wait":  [],
+            "total": total,
+        }
+
+        async def worker(sym: str):
+            r1 = await stage1_worker(ex, sem, sym, cfg)
+            state["s1_done"] += 1
+            if r1 is None:
+                return
+            want_sell, sym2, detail, pivot_ts, pivot_win_ts, pivot_end_ts, da = r1
+            state["s2_in"] += 1
+            _loop = asyncio.get_running_loop()
+            r2 = await _loop.run_in_executor(
+                _CPU_POOL, stage2_worker,
+                want_sell, sym2, detail, pivot_ts, pivot_win_ts, pivot_end_ts, da)
+            if r2 is None:
+                return
+            want_sell, sym2, detail, pivot_ts, pivot_win_ts, pivot_end_ts, da = r2
+            state["s3_in"] += 1
+            r3 = await stage3_worker(
+                ex, sem, sym2, want_sell, detail,
+                pivot_ts, pivot_win_ts, pivot_end_ts, cfg, da)
+            if r3:
+                side, s3_sym, det2, pt = r3
+                entry = (s3_sym, det2, pt)
+                if   side == "BUY":       state["buy_valid"].append(entry)
+                elif side == "SELL":      state["sell_valid"].append(entry)
+                elif side == "WAIT_BUY":  state["buy_wait"].append(entry)
+                elif side == "WAIT_SELL": state["sell_wait"].append(entry)
+
+        await asyncio.gather(*[worker(s) for s in symbols], return_exceptions=True)
+        return state
+
+    finally:
+        await ex.close()
+        if not _scan_session.closed:
+            await _scan_session.close()
+        await _scan_connector.close()
+
+
+def _bg_is_new(sym: str, det: str, mode: str) -> bool:
+    """Return True and register the signal if it hasn't been sent before."""
+    ts_m = _re.search(r"sig_ts_ms=(\d+)", det)
+    key  = (sym, ts_m.group(1) if ts_m else det[:60], mode)
+    with _bg_lock:
+        if key in _bg_seen:
+            return False
+        _bg_seen.add(key)
+        return True
+
+
+def _bg_scheduler_loop() -> None:
+    """
+    Background thread main loop.
+    Sleeps until the next :00/:15/:30/:45 UTC boundary, then runs
+    15M and 5M scans back-to-back, sending Telegram for new signals.
+    Runs forever; restarts after any error with a 60-s back-off.
+    """
+    global _bg_status
+
+    print("[BG] Background scanner started — 24/7 Telegram alerts enabled.")
+
+    while True:
+        try:
+            # ── Sleep until next quarter-hour mark ──────────────────
+            now    = time.time()
+            next_t = _bg_next_quarter(now)
+            wait   = max(next_t - now, 1.0)
+
+            next_str = _dt.datetime.utcfromtimestamp(next_t).strftime("%H:%M UTC")
+            with _bg_lock:
+                _bg_status["next_run"] = next_str
+                _bg_status["error"]    = ""
+
+            print(f"[BG] Next scan at {next_str} — sleeping {wait:.0f}s")
+            time.sleep(wait)
+
+            # ── Run 15M then 5M ─────────────────────────────────────
+            for mode_key in ("15m", "5m"):
+                with _bg_lock:
+                    _bg_status["running"]   = True
+                    _bg_status["last_mode"] = mode_key.upper()
+
+                print(f"[BG] Starting {mode_key.upper()} scan …")
+                t0    = time.time()
+                state = asyncio.run(_bg_run_one_async(mode_key))
+                elapsed = time.time() - t0
+
+                buy_valid  = [(s, d) for s, d, _ in state["buy_valid"]]
+                sell_valid = [(s, d) for s, d, _ in state["sell_valid"]]
+                buy_wait   = [(s, d) for s, d, _ in state["buy_wait"]]
+                sell_wait  = [(s, d) for s, d, _ in state["sell_wait"]]
+                total      = state["total"]
+
+                # Keep only signals not already sent this session
+                bv_new = [(s, d) for s, d in buy_valid  if _bg_is_new(s, d, mode_key)]
+                sv_new = [(s, d) for s, d in sell_valid if _bg_is_new(s, d, mode_key)]
+                bw_new = [(s, d) for s, d in buy_wait   if _bg_is_new(s, d, mode_key)]
+                sw_new = [(s, d) for s, d in sell_wait  if _bg_is_new(s, d, mode_key)]
+                n_new  = len(bv_new) + len(sv_new) + len(bw_new) + len(sw_new)
+
+                print(f"[BG] {mode_key.upper()} done in {elapsed:.1f}s — "
+                      f"{total} symbols · {n_new} new signal(s)")
+
+                if n_new > 0:
+                    _tg_send_signals(bv_new, sv_new, bw_new, sw_new,
+                                     f"BG {mode_key.upper()}", elapsed, total)
+
+                now_str = _dt.datetime.utcnow().strftime("%d %b %H:%M UTC")
+                with _bg_lock:
+                    _bg_status["last_run"]     = now_str
+                    _bg_status["last_signals"] = n_new
+                    _bg_status["running"]      = False
+
+        except Exception as exc:
+            err_str = str(exc)[:150]
+            print(f"[BG] ⚠ Error: {err_str}")
+            with _bg_lock:
+                _bg_status["error"]   = err_str
+                _bg_status["running"] = False
+            # Invalidate market cache so next scan re-fetches
+            _bg_cache.pop("markets", None)
+            time.sleep(60)   # back off, then retry on next loop
+
+
+@st.cache_resource
+def _start_bg_scheduler() -> str:
+    """
+    Start the background scheduler thread exactly once per process.
+    @st.cache_resource ensures this is called only once even across
+    Streamlit's multiple-rerun model.
+    Returns a status string for debug purposes.
+    """
+    t = _threading.Thread(
+        target=_bg_scheduler_loop,
+        name="bg-scanner",
+        daemon=True,   # dies automatically if the process exits
+    )
+    t.start()
+    return f"started pid={t.ident}"
+
+
+# ══════════════════════════════════════════════════════════════════════
 MAX_CONCURRENT   = 75     # ⚡ v43: lowered from 150 — fewer 429s → higher real throughput
 RETRY_ATTEMPTS   = 3
 RETRY_BASE_DELAY = 0.5   # seconds; doubles each attempt
@@ -4375,6 +4601,9 @@ def _all_signals_two_col_html(bv_list, sv_list, bw_list, sw_list, mode_key: str,
 
 
 def main():
+    # ── Start the 24/7 background scheduler (once per process) ───────────
+    _start_bg_scheduler()
+
     _init_session()
 
     # ── Timezone + Time format — load from session / query params ──────
@@ -4471,6 +4700,29 @@ def main():
         st.markdown(
             '<div style="font-size:0.67rem;color:#5a5a72;margin-top:2px;font-family:var(--mono)">'
             'Settings persist across reloads via URL query params</div>',
+            unsafe_allow_html=True)
+
+        # ── Background scheduler status ───────────────────────────
+        st.markdown(
+            '<div style="border-top:1px solid #1e1e2a;margin:8px 0 6px"></div>',
+            unsafe_allow_html=True)
+        with _bg_lock:
+            _bgs = dict(_bg_status)
+        _run_col  = "#00e676" if not _bgs["error"] else "#ff5252"
+        _run_icon = "🔄 Running…" if _bgs["running"] else ("⚠ Error" if _bgs["error"] else "✅ Idle")
+        st.markdown(
+            f'<div style="font-size:0.72rem;color:#7ecfea;margin-bottom:4px;">'
+            f'<b>🤖 Background Scheduler (24/7)</b></div>'
+            f'<div style="font-size:0.68rem;font-family:var(--mono);color:#9a9aaa;'
+            f'background:rgba(0,180,216,0.05);border:1px solid rgba(0,180,216,0.15);'
+            f'border-radius:6px;padding:5px 10px;line-height:1.7;">'
+            f'Status: <b style="color:{_run_col}">{_run_icon}</b> &nbsp;·&nbsp; '
+            f'Last run: <b>{_bgs["last_run"]}</b> &nbsp;·&nbsp; '
+            f'Mode: <b>{_bgs["last_mode"]}</b> &nbsp;·&nbsp; '
+            f'New signals: <b>{_bgs["last_signals"]}</b><br>'
+            f'Next scan: <b>{_bgs["next_run"]}</b>'
+            + (f'<br><span style="color:#ff5252">⚠ {_bgs["error"]}</span>' if _bgs["error"] else '')
+            + f'</div>',
             unsafe_allow_html=True)
 
         # ── Telegram sub-section ──────────────────────────────────────
