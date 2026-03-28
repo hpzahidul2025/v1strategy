@@ -1,6 +1,16 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v56
+Binance Futures Scanner - ULTRA-FAST Edition v57
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v57 24/7 BACKGROUND SCHEDULER + TELEGRAM (no browser needed):
+  - Background daemon thread runs 15M + 5M scans every 15 min, clock-aligned
+      to :00/:15/:30/:45 UTC marks, completely independent of any browser session.
+  - Uses @st.cache_resource to start exactly once per process; survives
+      page reloads and session disconnects.
+  - Module-level market cache (_bg_cache) and signal dedup set (_bg_seen)
+      ensure no duplicate Telegram alerts across restarts.
+  - Scheduler status (last run, next run, errors) shown in Settings panel.
+  - Compatible with Streamlit Cloud + UptimeRobot for fully free 24/7 hosting.
 
 v56 AUTO-LOOP + SIGNAL HISTORY + DNS FIX:
   - Auto-Loop mode: runs both 15M and 5M scans every 15 minutes, clock-aligned
@@ -390,7 +400,7 @@ import aiohttp
 import ccxt.async_support as ccxt_async
 
 # ══════════════════════════════════════════════════════════════════════
-#  TELEGRAM ALERTS  — v56: ported from CLI v56
+#  TELEGRAM ALERTS  — v57: ported from CLI v56, extended for 24/7 bg scheduler
 #  Token / chat-ID are read from Streamlit Secrets first, then fall back
 #  to the hard-coded defaults below so the CLI credentials just work.
 #  To override, add to .streamlit/secrets.toml:
@@ -655,6 +665,20 @@ def _bg_scheduler_loop() -> None:
 
     print("[BG] Background scanner started — 24/7 Telegram alerts enabled.")
 
+    # ── Startup ping ──────────────────────────────────────────────────
+    try:
+        _ping_ts = _dt.datetime.utcnow().strftime("%d %b %Y  %H:%M UTC")
+        _next_ts = _dt.datetime.utcfromtimestamp(_bg_next_quarter(time.time())).strftime("%H:%M UTC")
+        _tg_send_sync(
+            f"🟢 <b>Binance Futures Scanner v57 — ONLINE</b>\n"
+            f"🕐 {_ping_ts}\n"
+            f"🤖 24/7 background scheduler started\n"
+            f"⏱ First scan at {_next_ts} UTC"
+        )
+    except Exception as _pe:
+        print(f"[BG] Startup ping failed (non-fatal): {_pe}")
+
+
     while True:
         try:
             # ── Sleep until next quarter-hour mark ──────────────────
@@ -877,7 +901,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v55",
+    page_title="Binance Futures Scanner v57",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -4442,16 +4466,16 @@ def _init_session():
         "time_fmt":     _tf_default,
         "show_tz_panel": False,
         "scan_mode_sel": "15m",
-        # ── v56: Auto-loop ────────────────────────────────────────────
+        # ── v57: Auto-loop ────────────────────────────────────────────
         "auto_loop":        False,
         "auto_loop_15m":    True,
         "auto_loop_5m":     True,
         "next_scan_time":   0.0,
         "auto_scan_running": False,
         "auto_scan_mode":   None,   # "15m" or "5m" — which mode is currently queued
-        # ── v56: Telegram ─────────────────────────────────────────────
+        # ── v57: Telegram ─────────────────────────────────────────────
         "tg_enabled":       True,   # send alert after each scan with signals
-        # ── v56: Signal history ───────────────────────────────────────
+        # ── v57: Signal history ───────────────────────────────────────
         "signal_history":   [],     # list of dicts — accumulated across all scans
         "history_seen":     set(),  # dedup key: (symbol, signal_ts_ms, mode)
     }
@@ -4633,7 +4657,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v56</span>
+    <span class="sc-badge blue">&#128640; v57</span>
     <span class="sc-badge green">&#10004; 3 Stages</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
     <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
@@ -4755,7 +4779,7 @@ def main():
                 def _tg_test_thread():
                     ts = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
                     _tg_ok[0] = _tg_send_sync(
-                        f"✅ <b>Binance Streamlit Scanner v56</b>\n"
+                        f"✅ <b>Binance Streamlit Scanner v57</b>\n"
                         f"🕐 {ts}\n"
                         f"Telegram alerts are working!"
                     )
@@ -5171,7 +5195,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "sell_wait_full":  [(s, d, p) for s, d, p in sell_wait],
                     })
 
-                    # ── v56: accumulate signals into history ──────────────
+                    # ── v57: accumulate signals into history ──────────────
                     _hist    = st.session_state.setdefault("signal_history", [])
                     _seen    = st.session_state.setdefault("history_seen", set())
                     _new_rows = []
@@ -5190,7 +5214,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         _write_hdr = not _os.path.exists(_hist_path)
                         _hist_df.to_csv(_hist_path, mode="a", index=False, header=_write_hdr)
 
-                    # ── v56: Telegram alert ───────────────────────────────
+                    # ── v57: Telegram alert ───────────────────────────────
                     if st.session_state.get("tg_enabled", True):
                         _tg_bv = [(s, d) for s, d, _ in buy_valid]
                         _tg_sv = [(s, d) for s, d, _ in sell_valid]
@@ -5204,7 +5228,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                             daemon=True,
                         ).start()
 
-                    # ── v56: auto-loop bookkeeping after scan completes ───
+                    # ── v57: auto-loop bookkeeping after scan completes ───
                     if st.session_state.get("auto_loop", False):
                         _do_15m = st.session_state.get("auto_loop_15m", True)
                         _do_5m  = st.session_state.get("auto_loop_5m",  True)
@@ -5229,7 +5253,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "df_final":     None,
                         "buy_valid": [], "sell_valid": [],
                     })
-                    # ── v56: auto-loop bookkeeping (no-signal path) ───────
+                    # ── v57: auto-loop bookkeeping (no-signal path) ───────
                     if st.session_state.get("auto_loop", False):
                         _do_15m = st.session_state.get("auto_loop_15m", True)
                         _do_5m  = st.session_state.get("auto_loop_5m",  True)
