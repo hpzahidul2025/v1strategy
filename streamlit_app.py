@@ -402,12 +402,7 @@ from urllib.request import urlopen, Request as _UrlRequest
 from urllib.error   import URLError, HTTPError
 
 def _tg_creds():
-    """Return (token, chat_id) — loaded exclusively from Streamlit Secrets / env vars.
-    Set these in .streamlit/secrets.toml:
-        TG_TOKEN   = "your-bot-token"
-        TG_CHAT_ID = "your-chat-id"
-    Or as environment variables: TG_TOKEN and TG_CHAT_ID.
-    """
+    """Return (token, chat_id) from Streamlit Secrets or environment variables."""
     import os
     try:
         tok = st.secrets.get("TG_TOKEN",   os.environ.get("TG_TOKEN",   ""))
@@ -416,10 +411,7 @@ def _tg_creds():
         tok = os.environ.get("TG_TOKEN",   "")
         cid = os.environ.get("TG_CHAT_ID", "")
     if not tok or not cid:
-        raise RuntimeError(
-            "Telegram credentials not set.\n"
-            "Add TG_TOKEN and TG_CHAT_ID to .streamlit/secrets.toml or as environment variables."
-        )
+        raise RuntimeError("TG_TOKEN / TG_CHAT_ID not set in Secrets.")
     return tok, cid
 
 def _tg_send_sync(text: str) -> bool:
@@ -4734,9 +4726,14 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 _do_15m  = st.session_state.get("auto_loop_15m", True)
                 _do_5m   = st.session_state.get("auto_loop_5m",  True)
                 if _al_mode is None:
+                    # Start of cycle — run 15M first (or 5M if 15M disabled)
                     _al_mode = "15m" if _do_15m else ("5m" if _do_5m else None)
                 elif _al_mode == "15m":
+                    # 15M just ran — next is 5M
                     _al_mode = "5m" if _do_5m else None
+                elif _al_mode == "5m":
+                    # 5M is queued (set by post-15M bookkeeping) — run it now
+                    pass  # keep _al_mode as "5m"
                 else:
                     _al_mode = None  # both done — advance to next 15-min mark
 
