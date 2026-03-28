@@ -1,6 +1,22 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v55
+Binance Futures Scanner - ULTRA-FAST Edition v56
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+
+v56 AUTO-LOOP + SIGNAL HISTORY + DNS FIX:
+  - Auto-Loop mode: runs both 15M and 5M scans every 15 minutes, clock-aligned
+      to :00/:15/:30/:45 marks.  Toggle with the "🔄 Auto Scan" button.
+      Mode checkboxes let you choose 15M-only, 5M-only, or both.
+      A live countdown shows time until next scan; the page self-refreshes.
+  - Signal History: every confirmed and waiting signal from every scan in the
+      current session is accumulated in session_state["signal_history"] and
+      written to signals_history.csv on disk (appended, not overwritten).
+      A "📋 History" tab shows the full log, sortable by time or symbol, with
+      a one-click CSV download of all accumulated signals.
+      Duplicate suppression: same symbol+signal_ts+mode combo not added twice.
+  - DNS fix (ported from CLI v56):
+      TCPConnector now uses aiohttp.ThreadedResolver instead of aiodns —
+      prevents "Could not contact DNS servers" errors on VPN/cloud networks.
+      ttl_dns_cache raised 300 → 600s.
 
 v55 PERF-ONLY (zero logic/accuracy changes, ported from CLI v55):
   - _np_ffill helper: NumPy forward-fill — replaces pd.Series.ffill() everywhere.
@@ -374,7 +390,133 @@ import aiohttp
 import ccxt.async_support as ccxt_async
 
 # ══════════════════════════════════════════════════════════════════════
-#  CONSTANTS
+#  TELEGRAM ALERTS  — v56: ported from CLI v56
+#  Token / chat-ID are read from Streamlit Secrets first, then fall back
+#  to the hard-coded defaults below so the CLI credentials just work.
+#  To override, add to .streamlit/secrets.toml:
+#      TG_TOKEN   = "your-bot-token"
+#      TG_CHAT_ID = "your-chat-id"
+# ══════════════════════════════════════════════════════════════════════
+import json
+from urllib.request import urlopen, Request as _UrlRequest
+from urllib.error   import URLError, HTTPError
+
+def _tg_creds():
+    """Return (token, chat_id) — loaded exclusively from Streamlit Secrets / env vars.
+    Set these in .streamlit/secrets.toml:
+        TG_TOKEN   = "your-bot-token"
+        TG_CHAT_ID = "your-chat-id"
+    Or as environment variables: TG_TOKEN and TG_CHAT_ID.
+    """
+    import os
+    try:
+        tok = st.secrets.get("TG_TOKEN",   os.environ.get("TG_TOKEN",   ""))
+        cid = st.secrets.get("TG_CHAT_ID", os.environ.get("TG_CHAT_ID", ""))
+    except Exception:
+        tok = os.environ.get("TG_TOKEN",   "")
+        cid = os.environ.get("TG_CHAT_ID", "")
+    if not tok or not cid:
+        raise RuntimeError(
+            "Telegram credentials not set.\n"
+            "Add TG_TOKEN and TG_CHAT_ID to .streamlit/secrets.toml or as environment variables."
+        )
+    return tok, cid
+
+def _tg_send_sync(text: str) -> bool:
+    """Blocking Telegram sendMessage — safe to call from any thread."""
+    try:
+        tok, cid = _tg_creds()
+    except RuntimeError as e:
+        print(f"[Telegram] ❌ {e}")
+        return False
+    api = f"https://api.telegram.org/bot{tok}/sendMessage"
+    payload = json.dumps({
+        "chat_id":                  cid,
+        "text":                     text,
+        "parse_mode":               "HTML",
+        "disable_web_page_preview": True,
+    }).encode("utf-8")
+    req = _UrlRequest(api, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+            return bool(result.get("ok"))
+    except HTTPError as e:
+        print(f"[Telegram] ❌ HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}")
+        return False
+    except URLError as e:
+        print(f"[Telegram] ❌ Network error: {e}")
+        return False
+    except Exception as e:
+        print(f"[Telegram] ❌ Unexpected error: {e}")
+        return False
+
+def _tg_fmt_signal_group(signals: list, direction: str, wait: bool = False) -> list:
+    """Format one group of signals into Telegram message lines."""
+    if not signals:
+        return []
+    icon   = "🟢" if direction == "BUY" else "🔴"
+    status = "⏳ WAITING" if wait else "✅ CONFIRMED"
+    lines  = [f"\n{icon} <b>{direction} — {status}</b>", "─────────────────────"]
+    for sym, det in signals:
+        # Extract price and signal age from det string
+        px_m  = _re.search(r"sig_price=([\d.eE+\-]+)", det)
+        ts_m  = _re.search(r"sig_ts_ms=(\d+)",         det)
+        kind_m = _re.search(r"sig_kind=(\S+)",          det)
+        base  = sym.split("/")[0].replace("USDT", "").replace(":USDT", "") or sym
+        price = ""
+        if px_m:
+            pv = float(px_m.group(1))
+            price = f"{pv:,.2f}" if pv >= 1000 else (f"{pv:.4f}" if pv >= 1 else f"{pv:.6f}")
+        age_str = ""
+        if ts_m:
+            age_s = (time.time() * 1000 - int(ts_m.group(1))) / 60_000
+            age_str = f"{age_s:.0f}m" if age_s < 60 else f"{age_s/60:.1f}h"
+        kind_raw = kind_m.group(1) if kind_m else ""
+        kind_lbl = "MTF" if "MTF" in kind_raw else "QM"
+        lines.append(
+            f"{icon} <b>{base}</b>   💰 <code>{price}</code>\n"
+            f"    ⏱ {age_str}   │   🔷 {kind_lbl}"
+        )
+    lines.append("─────────────────────")
+    return lines
+
+def _tg_send_signals(
+    buy_valid: list, sell_valid: list,
+    buy_wait: list,  sell_wait: list,
+    label: str, elapsed: float, total: int,
+) -> bool:
+    """
+    Send Telegram alert only when at least one signal exists.
+    buy_valid / sell_valid are lists of (sym, det) tuples.
+    Returns True if at least one chunk was sent successfully.
+    """
+    bv, sv = len(buy_valid), len(sell_valid)
+    bw, sw = len(buy_wait),  len(sell_wait)
+    if bv + sv + bw + sw == 0:
+        return False
+
+    ts   = time.strftime("%d %b %Y  %H:%M UTC", time.gmtime())
+    body = [
+        "📡 <b>BINANCE FUTURES SIGNALS</b>",
+        f"🕐 {ts}",
+        f"📊 {label}",
+        "━━━━━━━━━━━━━━━━━━━━━",
+        f"🟢 BUY   ✅ {bv}  ⏳ {bw}",
+        f"🔴 SELL  ✅ {sv}  ⏳ {sw}",
+        f"⚡ {total} symbols · {elapsed:.1f}s",
+    ]
+    body += _tg_fmt_signal_group(buy_valid,  "BUY",  wait=False)
+    body += _tg_fmt_signal_group(sell_valid, "SELL", wait=False)
+    body += _tg_fmt_signal_group(buy_wait,   "BUY",  wait=True)
+    body += _tg_fmt_signal_group(sell_wait,  "SELL", wait=True)
+
+    msg    = "\n".join(body)
+    chunks = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
+    sent   = sum(1 for c in chunks if _tg_send_sync(c))
+    return sent == len(chunks)
+
+
 # ══════════════════════════════════════════════════════════════════════
 MAX_CONCURRENT   = 75     # ⚡ v43: lowered from 150 — fewer 429s → higher real throughput
 RETRY_ATTEMPTS   = 3
@@ -3469,7 +3611,11 @@ async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
     # v38 ⚡ Create shared aiohttp session for direct klines fetches.
     # All concurrent fetch_klines() calls reuse this single session —
     # zero per-call session overhead, persistent TCP keep-alive.
-    _scan_connector = aiohttp.TCPConnector(limit=200, keepalive_timeout=30, ttl_dns_cache=300)
+    # v56: ThreadedResolver replaces default aiodns — prevents DNS errors on VPN/cloud.
+    _scan_connector = aiohttp.TCPConnector(
+        limit=200, keepalive_timeout=30, ttl_dns_cache=600,
+        resolver=aiohttp.ThreadedResolver(),
+    )
     _scan_session   = aiohttp.ClientSession(
         connector=_scan_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
@@ -3570,7 +3716,11 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
     proxies = _get_all_proxies()
     # v38 ⚡ debug mode creates its own aiohttp session so fetch_klines() works.
     # (In scan mode, run_scan creates the session; debug runs standalone.)
-    _dbg_connector = aiohttp.TCPConnector(limit=20, keepalive_timeout=30, ttl_dns_cache=300)
+    # v56: ThreadedResolver replaces default aiodns — prevents DNS errors on VPN/cloud.
+    _dbg_connector = aiohttp.TCPConnector(
+        limit=20, keepalive_timeout=30, ttl_dns_cache=600,
+        resolver=aiohttp.ThreadedResolver(),
+    )
     _dbg_session   = aiohttp.ClientSession(
         connector=_dbg_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
@@ -4074,6 +4224,18 @@ def _init_session():
         "time_fmt":     _tf_default,
         "show_tz_panel": False,
         "scan_mode_sel": "15m",
+        # ── v56: Auto-loop ────────────────────────────────────────────
+        "auto_loop":        False,
+        "auto_loop_15m":    True,
+        "auto_loop_5m":     True,
+        "next_scan_time":   0.0,
+        "auto_scan_running": False,
+        "auto_scan_mode":   None,   # "15m" or "5m" — which mode is currently queued
+        # ── v56: Telegram ─────────────────────────────────────────────
+        "tg_enabled":       True,   # send alert after each scan with signals
+        # ── v56: Signal history ───────────────────────────────────────
+        "signal_history":   [],     # list of dicts — accumulated across all scans
+        "history_seen":     set(),  # dedup key: (symbol, signal_ts_ms, mode)
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -4250,10 +4412,11 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v55</span>
+    <span class="sc-badge blue">&#128640; v56</span>
     <span class="sc-badge green">&#10004; 3 Stages</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
     <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
+    <span class="sc-tz-badge" style="{'background:rgba(0,230,118,0.07);color:#00e676;border-color:rgba(0,230,118,0.28)' if st.session_state.get('tg_enabled', True) else 'background:rgba(255,255,255,0.04);color:#5a5a72;border-color:rgba(255,255,255,0.08)'};">&#128232; TG {'ON' if st.session_state.get('tg_enabled', True) else 'OFF'}</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -4317,9 +4480,50 @@ def main():
             '<div style="font-size:0.67rem;color:#5a5a72;margin-top:2px;font-family:var(--mono)">'
             'Settings persist across reloads via URL query params</div>',
             unsafe_allow_html=True)
+
+        # ── Telegram sub-section ──────────────────────────────────────
+        st.markdown(
+            '<div style="border-top:1px solid #1e1e2a;margin:8px 0 6px"></div>',
+            unsafe_allow_html=True)
+        tg_c1, tg_c2, tg_c3 = st.columns([3, 2, 2])
+        with tg_c1:
+            _tg_enabled = st.session_state.get("tg_enabled", True)
+            if st.checkbox(
+                "📨 Telegram alerts after each scan",
+                value=_tg_enabled,
+                key="tg_toggle",
+                help="Send a Telegram message whenever signals are found",
+            ):
+                st.session_state["tg_enabled"] = True
+            else:
+                st.session_state["tg_enabled"] = False
+        with tg_c2:
+            _tg_tok, _tg_cid = _tg_creds()
+            st.markdown(
+                f'<div style="font-size:0.7rem;color:#5a5a72;padding-top:6px;font-family:var(--mono)">'
+                f'Bot: …{_tg_tok[-8:]}<br>Chat: {_tg_cid}</div>',
+                unsafe_allow_html=True)
+        with tg_c3:
+            st.markdown('<div style="height:0.3rem"></div>', unsafe_allow_html=True)
+            if st.button("📨 Test Telegram", key="tg_test_btn", width="stretch"):
+                import threading as _thr_tg
+                _tg_ok = [False]
+                def _tg_test_thread():
+                    ts = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+                    _tg_ok[0] = _tg_send_sync(
+                        f"✅ <b>Binance Streamlit Scanner v56</b>\n"
+                        f"🕐 {ts}\n"
+                        f"Telegram alerts are working!"
+                    )
+                _t = _thr_tg.Thread(target=_tg_test_thread, daemon=True)
+                _t.start(); _t.join(timeout=20)
+                if _tg_ok[0]:
+                    st.success("✅ Test message sent!")
+                else:
+                    st.error("❌ Failed — check bot token and chat ID in Secrets")
         st.markdown("</div>", unsafe_allow_html=True)
 
-    tab_scan, tab_debug = st.tabs(["&#128269;  Full Scan", "&#128027;  Debug Symbol"])
+    tab_scan, tab_history, tab_debug = st.tabs(["&#128269;  Full Scan", "&#128203;  History", "&#128027;  Debug Symbol"])
 
     # ══ TAB 1: FULL SCAN ══════════════════════════════════════════════
     with tab_scan:
@@ -4458,15 +4662,102 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             unsafe_allow_html=True,
         )
 
-        # ── Action buttons ────────────────────────────────────────────
-        btn_c1, btn_c2 = st.columns([4, 1])
-        with btn_c1:
-            scan_clicked = st.button("&#128640;  Start Scan", type="primary", key="scan_btn",
-                                     width="stretch")
-        with btn_c2:
+        # ── Auto-loop controls ────────────────────────────────────────
+        auto_on = st.session_state.get("auto_loop", False)
+        al_c1, al_c2, al_c3, al_c4 = st.columns([3, 2, 2, 1])
+        with al_c1:
+            if st.button(
+                "⏹ Stop Auto Scan" if auto_on else "🔄 Auto Scan (15-min)",
+                key="auto_loop_btn",
+                type="primary" if auto_on else "secondary",
+                width="stretch",
+                help="Automatically run scans every 15 minutes aligned to :00/:15/:30/:45",
+            ):
+                st.session_state["auto_loop"] = not auto_on
+                if not auto_on:
+                    # Compute first upcoming :00/:15/:30/:45 mark
+                    _now = time.time()
+                    _el  = (int(time.gmtime(_now).tm_min) % 15) * 60 + int(time.gmtime(_now).tm_sec)
+                    st.session_state["next_scan_time"] = _now + (15 * 60) - _el
+                st.rerun()
+        with al_c2:
+            al_15m = st.session_state.get("auto_loop_15m", True)
+            if st.checkbox("15M scans", value=al_15m, key="al_15m_cb",
+                           disabled=not auto_on):
+                st.session_state["auto_loop_15m"] = True
+            else:
+                st.session_state["auto_loop_15m"] = False
+        with al_c3:
+            al_5m = st.session_state.get("auto_loop_5m", True)
+            if st.checkbox("5M scans", value=al_5m, key="al_5m_cb",
+                           disabled=not auto_on):
+                st.session_state["auto_loop_5m"] = True
+            else:
+                st.session_state["auto_loop_5m"] = False
+        with al_c4:
             if st.button("&#128260;", key="clear_mkts", width="stretch",
                          help="Refresh market list — clears cache and reloads from Binance"):
                 st.session_state.pop("markets", None)
+                st.rerun()
+
+        # Auto-loop countdown + status
+        if auto_on:
+            nxt = st.session_state.get("next_scan_time", 0.0)
+            secs_left = max(0.0, nxt - time.time())
+            mins_left, s_left = divmod(int(secs_left), 60)
+            _modes_active = []
+            if st.session_state.get("auto_loop_15m", True): _modes_active.append("15M")
+            if st.session_state.get("auto_loop_5m",  True): _modes_active.append("5M")
+            _modes_str = " + ".join(_modes_active) if _modes_active else "none"
+            st.markdown(
+                f'<div style="background:rgba(0,180,216,0.07);border:1px solid rgba(0,180,216,0.22);'
+                f'border-radius:8px;padding:6px 14px;font-size:0.82rem;color:#7ecfea;'
+                f'display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:4px">'
+                f'<span>&#128338; Next scan in <b>{mins_left}:{s_left:02d}</b></span>'
+                f'<span style="color:#5a8a9a">·</span>'
+                f'<span>Modes: <b>{_modes_str}</b></span>'
+                f'<span style="color:#5a8a9a">·</span>'
+                f'<span>History: <b>{len(st.session_state.get("signal_history",[]))} signals</b></span>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+        # ── Action buttons ────────────────────────────────────────────
+        scan_clicked = st.button("&#128640;  Start Scan", type="primary", key="scan_btn",
+                                 width="stretch")
+
+        # ── Auto-loop trigger: fire scan when countdown reaches zero ──
+        if auto_on:
+            nxt = st.session_state.get("next_scan_time", 0.0)
+            if time.time() >= nxt and not st.session_state.get("auto_scan_running", False):
+                # Determine which mode to run next
+                _al_mode = st.session_state.get("auto_scan_mode", None)
+                _do_15m  = st.session_state.get("auto_loop_15m", True)
+                _do_5m   = st.session_state.get("auto_loop_5m",  True)
+                if _al_mode is None:
+                    _al_mode = "15m" if _do_15m else ("5m" if _do_5m else None)
+                elif _al_mode == "15m":
+                    _al_mode = "5m" if _do_5m else None
+                else:
+                    _al_mode = None  # both done — advance to next 15-min mark
+
+                if _al_mode is not None:
+                    st.session_state["auto_scan_running"] = True
+                    st.session_state["auto_scan_mode"]    = _al_mode
+                    st.session_state["scan_mode_sel"]     = _al_mode
+                    scan_clicked = True   # inject a virtual click for the chosen mode
+                    mode_key = _al_mode   # refresh local var — assigned before this block
+                    cfg      = MODES[mode_key]
+                else:
+                    # Both modes done — advance clock
+                    _now = time.time()
+                    _el  = (int(time.gmtime(_now).tm_min) % 15) * 60 + int(time.gmtime(_now).tm_sec)
+                    st.session_state["next_scan_time"]    = _now + (15 * 60) - _el
+                    st.session_state["auto_scan_mode"]    = None
+                    st.session_state["auto_scan_running"] = False
+                    st.rerun()
+            elif auto_on and secs_left > 0:
+                # Refresh every ~10 s so the countdown updates
+                time.sleep(10)
                 st.rerun()
 
         st.markdown("<hr style='border:none;border-top:1px solid #1e1e2a;margin:0.5rem 0 0.7rem'>",
@@ -4630,6 +4921,56 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "buy_wait_full":   [(s, d, p) for s, d, p in buy_wait],
                         "sell_wait_full":  [(s, d, p) for s, d, p in sell_wait],
                     })
+
+                    # ── v56: accumulate signals into history ──────────────
+                    _hist    = st.session_state.setdefault("signal_history", [])
+                    _seen    = st.session_state.setdefault("history_seen", set())
+                    _new_rows = []
+                    for row in all_rows:
+                        # Dedup key: symbol + signal timestamp + mode
+                        _dk = (row["Symbol"], row.get("Signal_Time", ""), row["Mode"])
+                        if _dk not in _seen:
+                            _seen.add(_dk)
+                            _hist.append(row)
+                            _new_rows.append(row)
+                    # Append only new rows to CSV on disk
+                    if _new_rows:
+                        import os as _os
+                        _hist_path = "signals_history.csv"
+                        _hist_df   = pd.DataFrame(_new_rows)
+                        _write_hdr = not _os.path.exists(_hist_path)
+                        _hist_df.to_csv(_hist_path, mode="a", index=False, header=_write_hdr)
+
+                    # ── v56: Telegram alert ───────────────────────────────
+                    if st.session_state.get("tg_enabled", True):
+                        _tg_bv = [(s, d) for s, d, _ in buy_valid]
+                        _tg_sv = [(s, d) for s, d, _ in sell_valid]
+                        _tg_bw = [(s, d) for s, d, _ in buy_wait]
+                        _tg_sw = [(s, d) for s, d, _ in sell_wait]
+                        import threading as _thr
+                        _thr.Thread(
+                            target=_tg_send_signals,
+                            args=(_tg_bv, _tg_sv, _tg_bw, _tg_sw,
+                                  mode_key.upper(), elapsed, total),
+                            daemon=True,
+                        ).start()
+
+                    # ── v56: auto-loop bookkeeping after scan completes ───
+                    if st.session_state.get("auto_loop", False):
+                        _do_15m = st.session_state.get("auto_loop_15m", True)
+                        _do_5m  = st.session_state.get("auto_loop_5m",  True)
+                        _cur    = st.session_state.get("auto_scan_mode", mode_key)
+                        # Decide what comes next
+                        if _cur == "15m" and _do_5m:
+                            st.session_state["auto_scan_mode"]    = "5m"
+                            st.session_state["auto_scan_running"] = False
+                        else:
+                            # Advance clock to next 15-min mark
+                            _now = time.time()
+                            _el  = (int(time.gmtime(_now).tm_min) % 15) * 60 + int(time.gmtime(_now).tm_sec)
+                            st.session_state["next_scan_time"]    = _now + (15 * 60) - _el
+                            st.session_state["auto_scan_mode"]    = None
+                            st.session_state["auto_scan_running"] = False
                 else:
                     st.session_state.update({
                         "scan_done":    True,
@@ -4639,6 +4980,20 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                         "df_final":     None,
                         "buy_valid": [], "sell_valid": [],
                     })
+                    # ── v56: auto-loop bookkeeping (no-signal path) ───────
+                    if st.session_state.get("auto_loop", False):
+                        _do_15m = st.session_state.get("auto_loop_15m", True)
+                        _do_5m  = st.session_state.get("auto_loop_5m",  True)
+                        _cur    = st.session_state.get("auto_scan_mode", mode_key)
+                        if _cur == "15m" and _do_5m:
+                            st.session_state["auto_scan_mode"]    = "5m"
+                            st.session_state["auto_scan_running"] = False
+                        else:
+                            _now = time.time()
+                            _el  = (int(time.gmtime(_now).tm_min) % 15) * 60 + int(time.gmtime(_now).tm_sec)
+                            st.session_state["next_scan_time"]    = _now + (15 * 60) - _el
+                            st.session_state["auto_scan_mode"]    = None
+                            st.session_state["auto_scan_running"] = False
                 st.rerun()  # clean rerender — no stale placeholders above results
 
         # ══════════════════════════════════════════════════════════════
@@ -4858,7 +5213,105 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                                 file_name=f"signals_{mode_key_r}_{_sort_lbl.replace(' ','_').replace('→','').replace('↓','')}_{_exp_ts_int}.txt",
                                 mime="text/plain", width="stretch")
 
-    # ══ TAB 2: DEBUG SYMBOL ═══════════════════════════════════════════
+    # ══ TAB 2: SIGNAL HISTORY ════════════════════════════════════════
+    with tab_history:
+        st.markdown("#### &#128203; Signal History — All Scans This Session")
+
+        _hist = st.session_state.get("signal_history", [])
+
+        if not _hist:
+            st.markdown(
+                '<div style="padding:2rem;text-align:center;color:#5a5a72">'
+                '&#128269; No signals accumulated yet. Run a scan to start building history.</div>',
+                unsafe_allow_html=True)
+        else:
+            _df_hist = pd.DataFrame(_hist)
+
+            # ── Summary counters ──────────────────────────────────────
+            _hbv = (_df_hist["Direction"] == "BUY").sum()
+            _hsv = (_df_hist["Direction"] == "SELL").sum()
+            _hwb = (_df_hist["Direction"] == "WAIT_BUY").sum()
+            _hws = (_df_hist["Direction"] == "WAIT_SELL").sum()
+            st.markdown(
+                f'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+                f'<span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.25);'
+                f'padding:4px 12px;border-radius:16px;font-size:0.82rem">&#9650; BUY {_hbv}</span>'
+                f'<span style="background:rgba(255,64,96,0.1);color:#ff4060;border:1px solid rgba(255,64,96,0.25);'
+                f'padding:4px 12px;border-radius:16px;font-size:0.82rem">&#9660; SELL {_hsv}</span>'
+                f'<span style="background:rgba(0,230,118,0.05);color:#7ecfa0;border:1px solid rgba(0,230,118,0.12);'
+                f'padding:4px 12px;border-radius:16px;font-size:0.82rem">&#8987; WAIT BUY {_hwb}</span>'
+                f'<span style="background:rgba(255,64,96,0.05);color:#cf7e8a;border:1px solid rgba(255,64,96,0.12);'
+                f'padding:4px 12px;border-radius:16px;font-size:0.82rem">&#8987; WAIT SELL {_hws}</span>'
+                f'<span style="color:#5a5a72;padding:4px 12px;font-size:0.82rem">'
+                f'Total: <b style="color:#c0c0d0">{len(_df_hist)}</b></span>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+            # ── Sort control ──────────────────────────────────────────
+            _hs_c1, _hs_c2 = st.columns([3, 1])
+            with _hs_c1:
+                _hist_sort = st.selectbox(
+                    "Sort by",
+                    ["Newest first", "Oldest first", "Symbol A→Z", "BUY first", "SELL first"],
+                    index=0, key="hist_sort", label_visibility="collapsed"
+                )
+            with _hs_c2:
+                if st.button("&#128465; Clear History", key="clear_hist", width="stretch",
+                             help="Clear all accumulated signals from this session"):
+                    st.session_state["signal_history"] = []
+                    st.session_state["history_seen"]   = set()
+                    st.rerun()
+
+            # Apply sort
+            if _hist_sort == "Newest first":
+                _df_show = _df_hist.iloc[::-1].reset_index(drop=True)
+            elif _hist_sort == "Oldest first":
+                _df_show = _df_hist.reset_index(drop=True)
+            elif _hist_sort == "Symbol A→Z":
+                _df_show = _df_hist.sort_values("Symbol").reset_index(drop=True)
+            elif _hist_sort == "BUY first":
+                _df_show = _df_hist.sort_values("Direction").reset_index(drop=True)
+            else:
+                _df_show = _df_hist.sort_values("Direction", ascending=False).reset_index(drop=True)
+
+            # Display table
+            _hist_display_cols = [
+                "Scan_Time", "Direction", "Symbol", "Signal_Price",
+                "Signal_TF", "Signal_Time", "ADX_Peak", "Pivot_Age_h", "Mode",
+            ]
+            _hist_display_cols = [c for c in _hist_display_cols if c in _df_show.columns]
+            _hist_col_cfg = {
+                "Scan_Time":    st.column_config.TextColumn("Scan Time",   width=150),
+                "Direction":    st.column_config.TextColumn("Dir",         width=90),
+                "Symbol":       st.column_config.TextColumn("Symbol",      width=140),
+                "Signal_Price": st.column_config.TextColumn("Price",       width=100),
+                "Signal_TF":    st.column_config.TextColumn("TF",          width=55),
+                "Signal_Time":  st.column_config.TextColumn("Signal Time", width=150),
+                "ADX_Peak":     st.column_config.NumberColumn("ADX",       format="%.1f", width=60),
+                "Pivot_Age_h":  st.column_config.NumberColumn("Age h",     format="%.1f", width=60),
+                "Mode":         st.column_config.TextColumn("Mode",        width=55),
+            }
+            st.dataframe(
+                _df_show[_hist_display_cols],
+                width="stretch",
+                hide_index=True,
+                height=min(600, 50 + 36 * min(len(_df_show), 50)),
+                column_config=_hist_col_cfg,
+            )
+            st.caption(f"{len(_df_show)} total signals · also saved to signals_history.csv on disk")
+
+            # ── Download ──────────────────────────────────────────────
+            _hcbuf = io.StringIO()
+            _df_show.to_csv(_hcbuf, index=False)
+            st.download_button(
+                "&#128196; Download Full History CSV",
+                data=_hcbuf.getvalue().encode("utf-8"),
+                file_name=f"signals_history_{int(time.time())}.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+
+    # ══ TAB 3: DEBUG SYMBOL ═══════════════════════════════════════════
     with tab_debug:
         st.markdown("#### &#128027; Debug a Single Symbol")
         st.caption("Runs every pipeline stage verbosely — see exactly where and why a pair passes or fails.")
