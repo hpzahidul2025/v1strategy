@@ -2,16 +2,16 @@
 Binance Futures Scanner - ULTRA-FAST Edition v58
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v58 COMPLETE GEO-BLOCK FIX (no proxy needed):
-  - _FAPI_URL: fapi.binance.com → fapi1.binance.com (451 geo-blocked on US hosts).
+v58 COMPLETE GEO-BLOCK + DIRECT-FIRST FIX:
+  - _get_all_proxies: always prepends "" so direct connection is tried first.
+      Proxy 402/expired error is now skipped when direct fapi1 works.
+  - _FAPI_URL: fapi.binance.com → fapi1.binance.com (451 geo-blocked).
   - fetch_klines: resp.status != 200 → not (200 <= resp.status < 300).
-      fapi1-4 return HTTP 202; old check silently dropped every symbol.
-  - _try_load_markets: replaced ccxt load_markets() with direct aiohttp fetch
-      of fapi1.binance.com/fapi/v1/exchangeInfo via _fetch_markets_direct().
-      Root cause of 283 vs 559 symbols: ccxt was calling blocked fapi.binance.com
-      for exchangeInfo and failing/returning partial market list.
-      New _build_markets_from_exchange_info() parses the JSON and builds a
-      ccxt-compatible markets dict covering all PERPETUAL + quarterly contracts.
+      fapi1-4 return HTTP 202; old check dropped every symbol silently.
+  - _try_load_markets: replaced ccxt load_markets() with _fetch_markets_direct()
+      using aiohttp + ThreadedResolver hitting fapi1/fapi/v1/exchangeInfo.
+  - _build_markets_from_exchange_info: added null-guard for None symbol entries
+      (was crashing with "NoneType has no attribute get" on slot 2).
   - File renamed binance_futures_scanner_v58_streamlit.py.
 
 v57 24/7 BACKGROUND SCHEDULER + TELEGRAM (no browser needed):
@@ -2318,8 +2318,11 @@ PROXY_KEYS = ["PROXY_URL", "PROXY_URL_2", "PROXY_URL_3", "PROXY_URL_4"]
 
 
 def _get_all_proxies() -> list:
-    """Return all configured proxy URLs in priority order, skipping empty slots."""
-    proxies = []
+    """v58: Always try direct (no proxy) first, then configured proxy slots.
+    Prepending "" means _try_load_markets attempts fapi1 direct before any proxy.
+    This avoids proxy-payment errors when direct connection works fine.
+    """
+    proxies = [""]   # v58: direct connection is always slot 1
     for key in PROXY_KEYS:
         try:
             val = st.secrets.get(key, "") or ""
@@ -2360,37 +2363,34 @@ def _make_exchange() -> ccxt_async.binanceusdm:
 
 
 _EXCHANGE_INFO_URL = "https://fapi1.binance.com/fapi/v1/exchangeInfo"
-# v58: fapi.binance.com is geo-blocked (451) on US cloud hosts.
-# We fetch exchangeInfo directly via aiohttp (same as klines) and build
-# the markets dict ourselves — ccxt load_markets() is never called.
 
 
 def _build_markets_from_exchange_info(data: dict) -> dict:
     """
-    Parse Binance exchangeInfo JSON into a ccxt-compatible markets dict.
-    Only includes USDT-margined symbols (covers all contract types).
-    ccxt symbol format: BASE/QUOTE:SETTLE  e.g. BTC/USDT:USDT
+    v58: Parse Binance exchangeInfo into ccxt-compatible markets dict.
+    Handles all PERPETUAL and quarterly futures.
     """
     markets: dict = {}
     for s in data.get("symbols", []):
-        base    = s.get("baseAsset", "")
-        quote   = s.get("quoteAsset", "")
-        settle  = s.get("marginAsset", quote)
-        status  = s.get("status", "")
-        ctype   = s.get("contractType", "")
-        raw_sym = s.get("symbol", "")
+        if not s or not isinstance(s, dict):   # v58: null-guard
+            continue
+        base   = s.get("baseAsset", "")
+        quote  = s.get("quoteAsset", "")
+        settle = s.get("marginAsset", quote)
+        status = s.get("status", "")
+        ctype  = s.get("contractType", "")
+        raw    = s.get("symbol", "")
         if not base or not quote:
             continue
-        # ccxt maps PERPETUAL → swap, CURRENT_QUARTER/NEXT_QUARTER → future
         if ctype == "PERPETUAL":
             mtype = "swap"
         elif ctype in ("CURRENT_QUARTER", "NEXT_QUARTER", "CURRENT_MONTH", "NEXT_MONTH"):
             mtype = "future"
         else:
-            continue  # skip PERPETUAL_DELIVERING etc.
+            continue
         ccxt_sym = f"{base}/{quote}:{settle}"
         markets[ccxt_sym] = {
-            "id":     raw_sym,
+            "id":     raw,
             "symbol": ccxt_sym,
             "base":   base,
             "quote":  quote,
@@ -2407,9 +2407,8 @@ def _build_markets_from_exchange_info(data: dict) -> dict:
 
 async def _fetch_markets_direct(proxy: str = "") -> dict:
     """
-    v58: Fetch exchangeInfo from fapi1.binance.com directly using aiohttp
-    with ThreadedResolver — completely bypasses ccxt to avoid geo-block.
-    Returns ccxt-compatible markets dict.
+    v58: Fetch exchangeInfo from fapi1 via aiohttp with ThreadedResolver.
+    Completely bypasses ccxt — avoids geo-block on ccxt load_markets().
     """
     connector = aiohttp.TCPConnector(
         ssl=False,
@@ -2423,7 +2422,7 @@ async def _fetch_markets_direct(proxy: str = "") -> dict:
         async with session.get(_EXCHANGE_INFO_URL, **kwargs) as resp:
             if not (200 <= resp.status < 300):
                 raise RuntimeError(
-                    f"exchangeInfo returned HTTP {resp.status} from {_EXCHANGE_INFO_URL}"
+                    f"HTTP {resp.status} from {_EXCHANGE_INFO_URL}"
                 )
             data = await resp.json(content_type=None)
     return _build_markets_from_exchange_info(data)
@@ -2431,21 +2430,24 @@ async def _fetch_markets_direct(proxy: str = "") -> dict:
 
 async def _try_load_markets(proxies: list) -> tuple:
     """
-    v58: Fetch markets directly from fapi1 (bypasses ccxt load_markets).
+    v58: Fetch markets directly from fapi1 via aiohttp — bypasses ccxt.
+    Slot order from _get_all_proxies: ["", proxy1, proxy2, ...]
+    "" = direct (no proxy) — tried first so proxy plan is not needed.
     Returns (exchange, active_proxy_url, active_proxy_index).
-    Raises RuntimeError if all proxies fail.
+    Raises RuntimeError if all slots fail.
     """
     errors = []
-    for i, proxy in enumerate(proxies if proxies else [""]):
+    slots = proxies if proxies else [""]
+    for i, proxy in enumerate(slots):
+        label = _proxy_label(proxy) if proxy else "direct"
         try:
             markets = await _fetch_markets_direct(proxy)
             ex = _make_exchange_with_proxy(proxy)
-            # Inject markets so ccxt symbol lookups still work
             ex.markets       = markets
             ex.markets_by_id = {m["id"]: m for m in markets.values()}
             return ex, proxy, i
         except Exception as e:
-            errors.append(f"Slot {i+1} ({_proxy_label(proxy)}): {e}")
+            errors.append(f"Slot {i+1} ({label}): {e}")
     raise RuntimeError(
         "All slots failed to fetch exchangeInfo:\n" + "\n".join(errors)
     )
