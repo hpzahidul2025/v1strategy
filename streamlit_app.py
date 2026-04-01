@@ -2,16 +2,17 @@
 Binance Futures Scanner - ULTRA-FAST Edition v58
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v58 COMPLETE GEO-BLOCK + DIRECT-FIRST FIX:
-  - _get_all_proxies: always prepends "" so direct connection is tried first.
-      Proxy 402/expired error is now skipped when direct fapi1 works.
+v58 COMPLETE GEO-BLOCK FIX — premiumIndex symbol source:
   - _FAPI_URL: fapi.binance.com → fapi1.binance.com (451 geo-blocked).
   - fetch_klines: resp.status != 200 → not (200 <= resp.status < 300).
-      fapi1-4 return HTTP 202; old check dropped every symbol silently.
-  - _try_load_markets: replaced ccxt load_markets() with _fetch_markets_direct()
-      using aiohttp + ThreadedResolver hitting fapi1/fapi/v1/exchangeInfo.
-  - _build_markets_from_exchange_info: added null-guard for None symbol entries
-      (was crashing with "NoneType has no attribute get" on slot 2).
+      fapi1-4 return HTTP 202; old check silently dropped every kline fetch.
+  - _get_all_proxies: always prepends "" so direct is tried before proxy.
+  - _try_load_markets: replaced ccxt load_markets() with _fetch_symbol_list().
+      Root cause: exchangeInfo returns 202 with EMPTY BODY on fapi1-4,
+      so json parse returned None → "NoneType has no attribute get" crash.
+      New approach: fetch /fapi/v1/premiumIndex (returns all active USDT-M
+      perpetuals as a plain list — body always populated, no auth required).
+      Falls back to /fapi/v1/ticker/24hr across fapi1-4 hosts.
   - File renamed binance_futures_scanner_v58_streamlit.py.
 
 v57 24/7 BACKGROUND SCHEDULER + TELEGRAM (no browser needed):
@@ -784,7 +785,7 @@ _TF_TO_BINANCE = {
     "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
     "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M",
 }
-_FAPI_URL = "https://fapi1.binance.com/fapi/v1/klines"  # v58: geo-blocked host replaced
+_FAPI_URL = "https://fapi1.binance.com/fapi/v1/klines"  # v58
 
 # Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
 # Using a direct session bypasses all ccxt overhead (JSON schema validation,
@@ -2318,10 +2319,7 @@ PROXY_KEYS = ["PROXY_URL", "PROXY_URL_2", "PROXY_URL_3", "PROXY_URL_4"]
 
 
 def _get_all_proxies() -> list:
-    """v58: Always try direct (no proxy) first, then configured proxy slots.
-    Prepending "" means _try_load_markets attempts fapi1 direct before any proxy.
-    This avoids proxy-payment errors when direct connection works fine.
-    """
+    """v58: Always try direct (no proxy) first, then configured proxy slots."""
     proxies = [""]   # v58: direct connection is always slot 1
     for key in PROXY_KEYS:
         try:
@@ -2362,32 +2360,37 @@ def _make_exchange() -> ccxt_async.binanceusdm:
     return _make_exchange_with_proxy(_get_proxy())
 
 
-_EXCHANGE_INFO_URL = "https://fapi1.binance.com/fapi/v1/exchangeInfo"
+# v58: fapi.binance.com/fapi/v1/exchangeInfo is geo-blocked (HTTP 451) on US
+# cloud hosts AND fapi1-4 return 202 with empty body for exchangeInfo.
+# Solution: use /fapi/v1/premiumIndex which returns all active USDT-M perps
+# as a lightweight JSON array — body is always populated.
+# Fall back to /fapi/v1/ticker/24hr if premiumIndex also fails.
+_FAPI_HOSTS = [
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com",
+    "https://fapi4.binance.com",
+]
+_PREMIUM_INDEX_PATH = "/fapi/v1/premiumIndex"
+_TICKER_24H_PATH    = "/fapi/v1/ticker/24hr"
 
 
-def _build_markets_from_exchange_info(data: dict) -> dict:
+def _markets_from_premium_index(data: list) -> dict:
     """
-    v58: Parse Binance exchangeInfo into ccxt-compatible markets dict.
-    Handles all PERPETUAL and quarterly futures.
+    v58: Build ccxt-compatible markets dict from premiumIndex response.
+    premiumIndex returns all active USDT-M perpetuals — no filtering needed.
+    [{symbol:"BTCUSDT", markPrice:"...", indexPrice:"...", ...}]
     """
     markets: dict = {}
-    for s in data.get("symbols", []):
-        if not s or not isinstance(s, dict):   # v58: null-guard
+    for item in (data or []):
+        if not item or not isinstance(item, dict):
             continue
-        base   = s.get("baseAsset", "")
-        quote  = s.get("quoteAsset", "")
-        settle = s.get("marginAsset", quote)
-        status = s.get("status", "")
-        ctype  = s.get("contractType", "")
-        raw    = s.get("symbol", "")
-        if not base or not quote:
+        raw = item.get("symbol", "")
+        if not raw or not raw.endswith("USDT"):
             continue
-        if ctype == "PERPETUAL":
-            mtype = "swap"
-        elif ctype in ("CURRENT_QUARTER", "NEXT_QUARTER", "CURRENT_MONTH", "NEXT_MONTH"):
-            mtype = "future"
-        else:
-            continue
+        base = raw[:-4]          # strip USDT suffix
+        quote = "USDT"
+        settle = "USDT"
         ccxt_sym = f"{base}/{quote}:{settle}"
         markets[ccxt_sym] = {
             "id":     raw,
@@ -2395,53 +2398,78 @@ def _build_markets_from_exchange_info(data: dict) -> dict:
             "base":   base,
             "quote":  quote,
             "settle": settle,
-            "type":   mtype,
-            "active": status == "TRADING",
+            "type":   "swap",
+            "active": True,
             "spot":   False,
-            "swap":   mtype == "swap",
-            "future": mtype == "future",
-            "info":   s,
+            "swap":   True,
+            "future": False,
+            "info":   item,
         }
     return markets
 
 
-async def _fetch_markets_direct(proxy: str = "") -> dict:
+async def _fetch_symbol_list(proxy: str = "") -> dict:
     """
-    v58: Fetch exchangeInfo from fapi1 via aiohttp with ThreadedResolver.
-    Completely bypasses ccxt — avoids geo-block on ccxt load_markets().
+    v58: Fetch active USDT-M perpetual symbols directly via aiohttp.
+    Tries premiumIndex then ticker/24hr across all fapi hosts.
+    Returns ccxt-compatible markets dict.
+    Raises RuntimeError if all attempts fail.
     """
     connector = aiohttp.TCPConnector(
         ssl=False,
         resolver=aiohttp.ThreadedResolver(),
         ttl_dns_cache=600,
+        limit=10,
     )
     kwargs: dict = {"timeout": aiohttp.ClientTimeout(total=30, connect=10)}
     if proxy:
         kwargs["proxy"] = proxy
+
+    errors = []
     async with aiohttp.ClientSession(connector=connector) as session:
-        async with session.get(_EXCHANGE_INFO_URL, **kwargs) as resp:
-            if not (200 <= resp.status < 300):
-                raise RuntimeError(
-                    f"HTTP {resp.status} from {_EXCHANGE_INFO_URL}"
-                )
-            data = await resp.json(content_type=None)
-    return _build_markets_from_exchange_info(data)
+        for host in _FAPI_HOSTS:
+            for path in (_PREMIUM_INDEX_PATH, _TICKER_24H_PATH):
+                url = host + path
+                try:
+                    async with session.get(url, **kwargs) as resp:
+                        if not (200 <= resp.status < 300):
+                            errors.append(f"{url}: HTTP {resp.status}")
+                            continue
+                        raw = await resp.read()
+                        if not raw:
+                            errors.append(f"{url}: empty body (HTTP {resp.status})")
+                            continue
+                        import json as _json
+                        data = _json.loads(raw)
+                        if not data or not isinstance(data, list):
+                            errors.append(f"{url}: body not a list (got {type(data).__name__})")
+                            continue
+                        markets = _markets_from_premium_index(data)
+                        if len(markets) < 100:
+                            errors.append(f"{url}: too few symbols ({len(markets)})")
+                            continue
+                        return markets   # success
+                except Exception as e:
+                    errors.append(f"{url}: {type(e).__name__}: {str(e)[:80]}")
+                    continue
+
+    raise RuntimeError(
+        "All symbol fetch attempts failed:\n" + "\n".join(errors)
+    )
 
 
 async def _try_load_markets(proxies: list) -> tuple:
     """
-    v58: Fetch markets directly from fapi1 via aiohttp — bypasses ccxt.
-    Slot order from _get_all_proxies: ["", proxy1, proxy2, ...]
-    "" = direct (no proxy) — tried first so proxy plan is not needed.
+    v58: Fetch USDT-M perpetual symbols via _fetch_symbol_list (premiumIndex).
+    Slot order: ["", proxy1, proxy2, ...] — direct is always tried first.
     Returns (exchange, active_proxy_url, active_proxy_index).
-    Raises RuntimeError if all slots fail.
     """
     errors = []
     slots = proxies if proxies else [""]
     for i, proxy in enumerate(slots):
         label = _proxy_label(proxy) if proxy else "direct"
         try:
-            markets = await _fetch_markets_direct(proxy)
+            markets = await _fetch_symbol_list(proxy)
             ex = _make_exchange_with_proxy(proxy)
             ex.markets       = markets
             ex.markets_by_id = {m["id"]: m for m in markets.values()}
@@ -2449,7 +2477,7 @@ async def _try_load_markets(proxies: list) -> tuple:
         except Exception as e:
             errors.append(f"Slot {i+1} ({label}): {e}")
     raise RuntimeError(
-        "All slots failed to fetch exchangeInfo:\n" + "\n".join(errors)
+        "All slots failed to fetch symbols:\n" + "\n".join(errors)
     )
 
 
