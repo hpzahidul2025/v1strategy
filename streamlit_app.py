@@ -2,10 +2,12 @@
 Binance Futures Scanner - ULTRA-FAST Edition v58
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v58 FAPI HOST FIX — geo-block bypass without proxy:
-  - _FAPI_URL switched from fapi.binance.com (451 geo-blocked on US cloud hosts)
-      to fapi1.binance.com which returns 2xx from US-based servers.
-  - fapi1/fapi2/fapi3/fapi4 all confirmed reachable (HTTP 202) — no proxy needed.
+v58 FAPI HOST FIX + 2xx STATUS FIX (no proxy needed):
+  - _FAPI_URL: fapi.binance.com (451 geo-blocked) → fapi1.binance.com (202 OK).
+  - fetch_klines: resp.status != 200 → not (200 <= resp.status < 300).
+      Root cause of symbol skipping: fapi1-4 return HTTP 202, not 200.
+      Every symbol was hitting the "return None" branch and being dropped.
+  - No proxy required — fapi1/fapi2/fapi3/fapi4 all reachable direct.
   - File renamed binance_futures_scanner_v58_streamlit.py.
 
 v57 24/7 BACKGROUND SCHEDULER + TELEGRAM (no browser needed):
@@ -3526,7 +3528,7 @@ async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarra
                         continue   # retry immediately with new _http_proxy
                     if resp.status == 429 or resp.status >= 500:
                         pass   # fall through to jittered back-off
-                    elif resp.status != 200:
+                    elif not (200 <= resp.status < 300):  # v58: accept any 2xx (fapi1-4 return 202)
                         return None
                     else:
                         data = await resp.json(content_type=None)
