@@ -1,6 +1,6 @@
 """
-Binance Futures Scanner - ULTRA-FAST Edition v57
-Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
+OKX Futures Scanner - ULTRA-FAST Edition v57
+Streamlit Web App — OKX Futures (direct, no proxy required)
 
 v57 24/7 BACKGROUND SCHEDULER + TELEGRAM (no browser needed):
   - Background daemon thread runs 15M + 5M scans every 15 min, clock-aligned
@@ -500,7 +500,7 @@ def _tg_send_signals(
 
     ts   = time.strftime("%d %b %Y  %H:%M UTC", time.gmtime())
     body = [
-        "📡 <b>BINANCE FUTURES SIGNALS</b>",
+        "📡 <b>OKX FUTURES SIGNALS</b>",
         f"🕐 {ts}",
         f"📊 {label}",
         "━━━━━━━━━━━━━━━━━━━━━",
@@ -670,7 +670,7 @@ def _bg_scheduler_loop() -> None:
         _ping_ts = _dt.datetime.utcnow().strftime("%d %b %Y  %H:%M UTC")
         _next_ts = _dt.datetime.utcfromtimestamp(_bg_next_quarter(time.time())).strftime("%H:%M UTC")
         _tg_send_sync(
-            f"🟢 <b>Binance Futures Scanner v57 — ONLINE</b>\n"
+            f"🟢 <b>OKX Futures Scanner v57 — ONLINE</b>\n"
             f"🕐 {_ping_ts}\n"
             f"🤖 24/7 background scheduler started\n"
             f"⏱ First scan at {_next_ts} UTC"
@@ -765,14 +765,15 @@ RETRY_ATTEMPTS   = 3
 RETRY_BASE_DELAY = 0.5   # seconds; doubles each attempt
 UI_THROTTLE_S    = 0.25  # min seconds between progress UI refreshes
 
-# ── Direct Binance Futures klines endpoint (v38 ⚡ speed fix) ─────────────
-# Map ccxt-style TF strings → Binance API interval strings
-_TF_TO_BINANCE = {
+# ── Direct OKX Futures klines endpoint ───────────────────────────────────
+# Map ccxt-style TF strings → OKX API bar strings
+_TF_TO_OKX = {
     "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-    "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
-    "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M",
+    "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "8h": "8H", "12h": "12H",
+    "1d": "1D", "3d": "3D", "1w": "1W",
 }
-_FAPI_URL = "https://fapi.binance.com/fapi/v1/klines"
+_OKX_CANDLES_URL = "https://www.okx.com/api/v5/market/candles"
+_OKX_HISTORY_URL = "https://www.okx.com/api/v5/market/history-candles"
 
 # Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
 # Using a direct session bypasses all ccxt overhead (JSON schema validation,
@@ -901,7 +902,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Binance Futures Scanner v57",
+    page_title="OKX Futures Scanner v57",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -2298,98 +2299,62 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PROXY / EXCHANGE HELPERS  — multi-proxy fallback
+#  EXCHANGE HELPERS  — OKX (no proxy required)
 # ══════════════════════════════════════════════════════════════════════
 
-# Secret keys checked in priority order (add more as needed)
-PROXY_KEYS = ["PROXY_URL", "PROXY_URL_2", "PROXY_URL_3", "PROXY_URL_4"]
+# Proxy is disabled — OKX is accessible from Streamlit Cloud directly.
+PROXY_KEYS = []  # kept for API compatibility; always empty
 
 
 def _get_all_proxies() -> list:
-    """Return all configured proxy URLs in priority order, skipping empty slots."""
-    proxies = []
-    for key in PROXY_KEYS:
-        try:
-            val = st.secrets.get(key, "") or ""
-        except Exception:
-            val = os.environ.get(key, "") or ""
-        if val.strip():
-            proxies.append(val.strip())
-    return proxies
+    """Proxy disabled for OKX — always returns empty list."""
+    return []
 
 
 def _get_proxy() -> str:
-    """Return the first available proxy URL (backwards-compatible helper)."""
-    proxies = _get_all_proxies()
-    return proxies[0] if proxies else ""
+    """Proxy disabled for OKX."""
+    return ""
 
 
 def _proxy_label(proxy: str) -> str:
-    """Return a safe display label (host:port only, no credentials)."""
+    """Return a safe display label (unused — no proxy)."""
     if not proxy:
         return "none"
     return proxy.split("@")[-1] if "@" in proxy else proxy.split("//")[-1]
 
 
-def _make_exchange_with_proxy(proxy: str = "") -> ccxt_async.binanceusdm:
-    """Return a configured binanceusdm exchange using the given proxy URL."""
+def _make_exchange_with_proxy(proxy: str = "") -> ccxt_async.okx:
+    """Return a configured OKX swap exchange (proxy argument ignored)."""
     cfg: dict = {
         "enableRateLimit": True,
-        "options": {"defaultType": "future"},
+        "options": {"defaultType": "swap"},
     }
-    if proxy:
-        cfg["aiohttp_proxy"] = proxy
-    return ccxt_async.binanceusdm(cfg)
+    return ccxt_async.okx(cfg)
 
 
-def _make_exchange() -> ccxt_async.binanceusdm:
-    """Return exchange with first available proxy (backwards-compatible)."""
-    return _make_exchange_with_proxy(_get_proxy())
+def _make_exchange() -> ccxt_async.okx:
+    """Return OKX exchange (backwards-compatible helper)."""
+    return _make_exchange_with_proxy()
 
 
 async def _try_load_markets(proxies: list) -> tuple:
     """
-    Attempt load_markets() across proxy list until one succeeds.
-    Returns (exchange, active_proxy_url, active_proxy_index).
-    Raises RuntimeError if all proxies fail.
+    Load OKX markets.  proxies list is ignored (OKX needs no proxy).
+    Returns (exchange, active_proxy_url="", active_proxy_index=0).
+    Raises RuntimeError on failure.
     """
-    errors = []
-    for i, proxy in enumerate(proxies if proxies else [""]):
-        ex = _make_exchange_with_proxy(proxy)
-        try:
-            await ex.load_markets()
-            return ex, proxy, i
-        except Exception as e:
-            await ex.close()
-            errors.append(f"Proxy {i+1} ({_proxy_label(proxy)}): {e}")
-    raise RuntimeError(
-        "All proxies failed to connect:\n" + "\n".join(errors)
-    )
+    ex = _make_exchange_with_proxy()
+    try:
+        await ex.load_markets()
+        return ex, "", 0
+    except Exception as e:
+        await ex.close()
+        raise RuntimeError(f"Failed to connect to OKX: {e}")
 
 
 async def _rotate_proxy() -> bool:
-    """
-    v49: Mid-scan proxy rotation.
-    Called when fetch_klines detects the active proxy slot is bandwidth-exhausted
-    (407 Proxy Auth Required, 403 Forbidden, or hard connection failure).
-    Atomically advances _proxy_idx to the next configured slot.
-    Returns True if a new slot was activated, False if no more slots available.
-    """
-    global _http_proxy, _proxy_idx, _proxy_lock
-    if _proxy_lock is None:
-        return False
-    async with _proxy_lock:
-        next_idx = _proxy_idx + 1
-        if next_idx >= len(_proxy_list):
-            return False
-        _proxy_idx  = next_idx
-        _http_proxy = _proxy_list[next_idx] if _proxy_list[next_idx] else None
-        try:
-            st.session_state["active_proxy"]     = _proxy_list[next_idx]
-            st.session_state["active_proxy_idx"] = next_idx
-        except Exception:
-            pass
-        return True
+    """Proxy rotation is a no-op for OKX — always returns False."""
+    return False
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3487,63 +3452,84 @@ def calc_sma_cloud_bs_debug(h: np.ndarray, l: np.ndarray,
 
 async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarray]:
     """
-    v38 ⚡ Direct Binance Futures klines fetch — bypasses ccxt entirely.
+    Direct OKX Futures klines fetch — bypasses ccxt entirely.
 
     Returns float64 ndarray shape (N, 6): [ts_ms, open, high, low, close, volume]
     Returns None on error / empty response.
 
-    Converts ccxt symbol "BTC/USDT:USDT" → Binance symbol "BTCUSDT".
+    Converts ccxt symbol "BTC/USDT:USDT" → OKX instId "BTC-USDT-SWAP".
     Uses module-level _http_session (set once per scan/debug) — zero session-creation
     overhead per call, persistent TCP keep-alive across all concurrent fetches.
 
-    Binance returns each row as a mixed list [int, str, str, str, str, str, ...].
-    We slice cols 0-5 via np.array(..., dtype=object)[:, :6].astype(float) — one
-    vectorised cast, ~10x faster than the per-row float() loop.
+    OKX returns data newest-first as string arrays; we reverse and cast to float64.
+    OKX /market/candles returns up to 300 bars; /market/history-candles up to 100.
+    For limit > 300 we paginate automatically using the after timestamp param.
 
     Retries up to 3x on network errors or 429/5xx HTTP status codes.
     """
     global _http_session
-    # ccxt "BTC/USDT:USDT" → "BTCUSDT"
-    base_sym = sym.split(":")[0].replace("/", "")
-    interval = _TF_TO_BINANCE.get(tf, tf)
-    params   = {"symbol": base_sym, "interval": interval, "limit": limit}
+    # ccxt "BTC/USDT:USDT" → OKX "BTC-USDT-SWAP"
+    inst_id = sym.split(":")[0].replace("/", "-") + "-SWAP"
+    bar     = _TF_TO_OKX.get(tf, tf)
 
-    for _att in range(3):
-        try:
-            async with sem:   # ⚡ semaphore released before any sleep — no slot held during back-off
-                async with _http_session.get(_FAPI_URL, params=params, proxy=_http_proxy) as resp:
-                    if resp.status in (407, 403):
-                        # v49: proxy bandwidth exhausted — rotate to next slot
-                        rotated = await _rotate_proxy()
-                        if not rotated:
+    all_data: list = []
+    remaining      = limit
+    after_ts: Optional[int] = None
+
+    for _page in range(20):
+        if remaining <= 0:
+            break
+        if _page == 0:
+            batch_sz = min(remaining, 300)
+            url    = _OKX_CANDLES_URL
+            params = {"instId": inst_id, "bar": bar, "limit": batch_sz}
+        else:
+            batch_sz = min(remaining, 100)
+            url    = _OKX_HISTORY_URL
+            params = {"instId": inst_id, "bar": bar, "limit": batch_sz,
+                      "after": str(after_ts)}
+
+        _page_done = False
+        for _att in range(3):
+            try:
+                async with sem:
+                    async with _http_session.get(url, params=params) as resp:
+                        if resp.status == 429 or resp.status >= 500:
+                            pass
+                        elif resp.status != 200:
                             return None
-                        continue   # retry immediately with new _http_proxy
-                    if resp.status == 429 or resp.status >= 500:
-                        pass   # fall through to jittered back-off
-                    elif resp.status != 200:
-                        return None
-                    else:
-                        data = await resp.json(content_type=None)
-                        if not data:
-                            return None
-                        # Vectorised parse: object array slice → float64 in one cast
-                        arr = np.array(data, dtype=object)[:, :6].astype(np.float64)
-                        return arr
-            # ⚡ jittered back-off outside sem so other coroutines can proceed
-            await asyncio.sleep(1.0 * (_att + 1) + random.random() * 0.5)
-        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
-            # v49: hard proxy failure — rotate immediately
-            rotated = await _rotate_proxy()
-            if not rotated:
+                        else:
+                            payload = await resp.json(content_type=None)
+                            if payload.get("code") != "0":
+                                return None
+                            data = payload.get("data", [])
+                            if not data:
+                                _page_done = True
+                                break
+                            all_data.extend(data)
+                            remaining -= len(data)
+                            after_ts = int(data[-1][0])
+                            _page_done = True
+                            if len(data) < batch_sz:
+                                remaining = 0
+                            break
+                await asyncio.sleep(1.0 * (_att + 1) + random.random() * 0.5)
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                if _att < 2:
+                    await asyncio.sleep(0.5 * (_att + 1) + random.random() * 0.3)
+            except Exception:
                 return None
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            if _att < 2:
-                await asyncio.sleep(0.5 * (_att + 1) + random.random() * 0.3)
-        except (ValueError, KeyError):
+        if not _page_done:
             break
-        except Exception:
-            break
-    return None
+
+    if not all_data:
+        return None
+    all_data.reverse()  # OKX returns newest-first → reverse to oldest-first
+    arr = np.array([[r[0], r[1], r[2], r[3], r[4], r[5]] for r in all_data],
+                   dtype=object).astype(np.float64)
+    return arr
+
+
 
 
 def _arr_to_df(arr: np.ndarray) -> pd.DataFrame:
@@ -3979,7 +3965,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         return logs
     try:
         if sym not in ex.markets:
-            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Binance Futures"))
+            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on OKX Futures"))
             return logs
         _http_proxy  = active_proxy if active_proxy else None
         _proxy_list  = proxies
@@ -4647,7 +4633,7 @@ def main():
         st.markdown(f"""
 <div class="sc-header">
   <div class="sc-header-left">
-    <h1><i class="ico">&#9889;</i><span class="brand">Binance Futures</span> <span class="accent">Scanner</span></h1>
+    <h1><i class="ico">&#9889;</i><span class="brand">OKX Futures</span> <span class="accent">Scanner</span></h1>
     <div class="sub">
       Ultra-Fast
       <span class="dot">&bull;</span>
@@ -4779,7 +4765,7 @@ def main():
                 def _tg_test_thread():
                     ts = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
                     _tg_ok[0] = _tg_send_sync(
-                        f"✅ <b>Binance Streamlit Scanner v57</b>\n"
+                        f"✅ <b>OKX Streamlit Scanner v57</b>\n"
                         f"🕐 {ts}\n"
                         f"Telegram alerts are working!"
                     )
@@ -4796,61 +4782,12 @@ def main():
     # ══ TAB 1: FULL SCAN ══════════════════════════════════════════════
     with tab_scan:
 
-        # ── Proxy status banner ───────────────────────────────────────
-        _all_proxies  = _get_all_proxies()
-        _active_proxy = st.session_state.get("active_proxy", "")
-        # Use live module-level _proxy_idx if a scan has run; otherwise default
-        # to slot 0 (first configured slot) as the presumed active slot.
-        _active_idx = _proxy_idx if _proxy_list else st.session_state.get("active_proxy_idx", 0)
-
-        if _all_proxies:
-            # Build slot chips: green = active, grey = standby
-            _slot_chips = []
-            for _i, _p in enumerate(_all_proxies):
-                _lbl   = _proxy_label(_p)
-                _is_active = (_i == _active_idx)
-                _chip_style = (
-                    "background:rgba(0,230,118,0.12);color:#00e676;"
-                    "border:1px solid rgba(0,230,118,0.35);"
-                ) if _is_active else (
-                    "background:rgba(255,255,255,0.04);color:#6a6a88;"
-                    "border:1px solid rgba(255,255,255,0.08);"
-                )
-                _dot = "🟢" if _is_active else "⚪"
-                _active_label = "&nbsp;<b style=\"color:#00e676\">ACTIVE</b>" if _is_active else " STANDBY"
-                _slot_chips.append(
-                    f'<span style="display:inline-flex;align-items:center;gap:5px;'
-                    f'padding:3px 10px;border-radius:20px;font-family:var(--mono);'
-                    f'font-size:0.72rem;{_chip_style}">' 
-                    f'{_dot} Slot {_i+1}: {_lbl}'
-                    f'{_active_label}'
-                    f'</span>'
-                )
-            _chips_html = "&nbsp;".join(_slot_chips)
-            st.markdown(
-                f'<div class="sc-proxy-ok" style="display:flex;align-items:center;'
-                f'flex-wrap:wrap;gap:6px;">'
-                f'&#128274;&nbsp;<b>{len(_all_proxies)} proxy slot(s) configured</b>'
-                f'&nbsp;&mdash;&nbsp;{_chips_html}'
-                f'&nbsp;&middot;&nbsp;<span style="color:#5a8a5a;font-size:0.78rem">'
-                f'auto-fallback enabled</span></div>',
-                unsafe_allow_html=True)
-        else:
-            st.markdown(
-                '<div class="sc-proxy-err">&#128683; No proxy &mdash; Binance blocks Streamlit Cloud IPs. '
-                'Add <code>PROXY_URL</code> to Streamlit Secrets.</div>',
-                unsafe_allow_html=True)
-            with st.expander("How to set up a free proxy (3 min)"):
-                st.markdown("""
-1. Register at **https://proxy2.webshare.io** (free, no credit card)
-2. Go to **Proxy List** → copy as `Username:Password@host:port`
-3. In Streamlit → your app → **⋮ → Settings → Secrets**, add:
-```toml
-PROXY_URL   = "http://user1:pass1@p.webshare.io:80"
-PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
-```
-4. Save — app restarts in ~30s. Add up to 4 slots for auto-fallback.
-""")
+        # ── OKX connection status banner ──────────────────────────────
+        st.markdown(
+            '<div class="sc-proxy-ok">&#128994;&nbsp;<b>OKX Futures — direct connection</b>'
+            '&nbsp;&middot;&nbsp;<span style="color:#5a8a5a;font-size:0.78rem">'
+            'No proxy required &mdash; OKX API is publicly accessible</span></div>',
+            unsafe_allow_html=True)
 
         # ── Mode + Timeframes row ─────────────────────────────────────
         mode_key = st.session_state["scan_mode_sel"]
@@ -4964,7 +4901,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 st.session_state["auto_loop_5m"] = False
         with al_c4:
             if st.button("&#128260;", key="clear_mkts", width="stretch",
-                         help="Refresh market list — clears cache and reloads from Binance"):
+                         help="Refresh market list — clears cache and reloads from OKX"):
                 st.session_state.pop("markets", None)
                 st.rerun()
 
@@ -5045,7 +4982,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             })
             t0 = time.time()
 
-            prog_bar = st.progress(0.0, text="Connecting to Binance…")
+            prog_bar = st.progress(0.0, text="Connecting to OKX…")
             ctr_ph   = st.empty()
 
             def update_ui(state: dict):
