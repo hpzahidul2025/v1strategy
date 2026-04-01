@@ -2,12 +2,15 @@
 Binance Futures Scanner - ULTRA-FAST Edition v58
 Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
-v58 FAPI HOST FIX + 2xx STATUS FIX (no proxy needed):
-  - _FAPI_URL: fapi.binance.com (451 geo-blocked) → fapi1.binance.com (202 OK).
-  - fetch_klines: resp.status != 200 → not (200 <= resp.status < 300).
+v58 FAPI HOST + STATUS + CCXT URL FIX (no proxy needed):
+  - _FAPI_URL: fapi.binance.com → fapi1.binance.com (451 geo-blocked on US hosts).
+  - fetch_klines status check: resp.status != 200 → not (200 <= resp.status < 300).
       Root cause of symbol skipping: fapi1-4 return HTTP 202, not 200.
-      Every symbol was hitting the "return None" branch and being dropped.
-  - No proxy required — fapi1/fapi2/fapi3/fapi4 all reachable direct.
+      Every symbol hit the "return None" branch and was silently dropped.
+  - _make_exchange_with_proxy: added ccxt "urls" override so load_markets()
+      also uses fapi1.binance.com instead of the blocked fapi.binance.com.
+      Root cause of 283 vs 559 symbols: ccxt was hitting 451 on load_markets
+      and returning a partial/empty market list.
   - File renamed binance_futures_scanner_v58_streamlit.py.
 
 v57 24/7 BACKGROUND SCHEDULER + TELEGRAM (no browser needed):
@@ -780,7 +783,7 @@ _TF_TO_BINANCE = {
     "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
     "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M",
 }
-_FAPI_URL = "https://fapi1.binance.com/fapi/v1/klines"
+_FAPI_URL = "https://fapi1.binance.com/fapi/v1/klines"  # v58: fapi.binance.com is geo-blocked (451)
 
 # Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
 # Using a direct session bypasses all ccxt overhead (JSON schema validation,
@@ -2340,10 +2343,24 @@ def _proxy_label(proxy: str) -> str:
 
 
 def _make_exchange_with_proxy(proxy: str = "") -> ccxt_async.binanceusdm:
-    """Return a configured binanceusdm exchange using the given proxy URL."""
+    """Return a configured binanceusdm exchange using the given proxy URL.
+    v58: Override ccxt URLs to use fapi1.binance.com — fapi.binance.com is
+    geo-blocked (451) on US cloud hosts, causing load_markets() to fail or
+    return partial symbol lists (283 instead of 559 symbols).
+    """
+    _fapi_base = "https://fapi1.binance.com"
     cfg: dict = {
         "enableRateLimit": True,
         "options": {"defaultType": "future"},
+        "urls": {
+            "api": {
+                "fapiPublic":   f"{_fapi_base}/fapi/v1/",
+                "fapiPublicV2": f"{_fapi_base}/fapi/v2/",
+                "fapiPrivate":  f"{_fapi_base}/fapi/v1/",
+                "fapiPrivateV2":f"{_fapi_base}/fapi/v2/",
+                "fapiData":     f"{_fapi_base}/futures/data/",
+            }
+        },
     }
     if proxy:
         cfg["aiohttp_proxy"] = proxy
@@ -3528,7 +3545,7 @@ async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarra
                         continue   # retry immediately with new _http_proxy
                     if resp.status == 429 or resp.status >= 500:
                         pass   # fall through to jittered back-off
-                    elif not (200 <= resp.status < 300):  # v58: accept any 2xx (fapi1-4 return 202)
+                    elif not (200 <= resp.status < 300):  # v58: accept any 2xx; fapi1-4 return 202
                         return None
                     else:
                         data = await resp.json(content_type=None)
