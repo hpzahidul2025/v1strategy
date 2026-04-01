@@ -774,26 +774,24 @@ RETRY_ATTEMPTS   = 3
 RETRY_BASE_DELAY = 0.5   # seconds; doubles each attempt
 UI_THROTTLE_S    = 0.25  # min seconds between progress UI refreshes
 
-# ── Direct Binance Futures klines endpoint (v38 ⚡ speed fix) ─────────────
-# Map ccxt-style TF strings → Binance API interval strings
-_TF_TO_BINANCE = {
-    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-    "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
-    "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M",
+# ── Bybit Linear Perpetual klines endpoint (v59 — replaces Binance) ──────────
+# Map ccxt-style TF strings → Bybit API interval strings
+# Bybit intervals: 1 3 5 15 30 60 120 240 360 720 D W M
+_TF_TO_BYBIT = {
+    "1m": "1",  "3m": "3",  "5m": "5",  "15m": "15", "30m": "30",
+    "1h": "60", "2h": "120","4h": "240","6h": "360", "8h": "360",
+    "12h": "720","1d": "D", "3d": "D",  "1w": "W",   "1M": "M",
 }
-# v59: Ordered kline host list — tried in sequence per fetch attempt.
-#   data-api.binance.vision is Binance's official public data mirror:
-#   serves futures klines at /fapi/v1/klines without geo-restrictions.
-#   The only host reliably accessible from US cloud IPs without a proxy.
-_KLINE_HOSTS = [
-    "https://data-api.binance.vision",  # public mirror — US-safe, try first
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com",
-    "https://fapi4.binance.com",
-]
-_KLINE_PATH = "/fapi/v1/klines"
-_FAPI_URL   = _KLINE_HOSTS[0] + _KLINE_PATH   # backwards-compat alias
+_TF_TO_BINANCE = _TF_TO_BYBIT   # backwards-compat alias
+
+# Bybit public API — no geo-blocks, no auth, works from any cloud IP
+_BYBIT_BASE      = "https://api.bybit.com"
+_BYBIT_KLINE_URL = _BYBIT_BASE + "/v5/market/kline"
+_BYBIT_INST_URL  = _BYBIT_BASE + "/v5/market/instruments-info"
+_FAPI_URL        = _BYBIT_KLINE_URL   # backwards-compat alias
+
+# Bybit max bars per kline request (vs Binance 1500)
+_BYBIT_MAX_BARS  = 1000
 
 # Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
 # Using a direct session bypasses all ccxt overhead (JSON schema validation,
@@ -2352,178 +2350,60 @@ def _proxy_label(proxy: str) -> str:
     return proxy.split("@")[-1] if "@" in proxy else proxy.split("//")[-1]
 
 
-def _make_exchange_with_proxy(proxy: str = "") -> ccxt_async.binanceusdm:
-    """Return a configured binanceusdm exchange using the given proxy URL."""
-    cfg: dict = {
-        "enableRateLimit": True,
-        "options": {"defaultType": "future"},
-    }
-    if proxy:
-        cfg["aiohttp_proxy"] = proxy
-    return ccxt_async.binanceusdm(cfg)
-
-
-def _make_exchange() -> ccxt_async.binanceusdm:
-    """Return exchange with first available proxy (backwards-compatible)."""
-    return _make_exchange_with_proxy(_get_proxy())
-
-
-# ── v59: US geo-block + bot-detection bypass ──────────────────────────────
-#
-#  ROOT CAUSES of "empty body (HTTP 202)":
-#    Cloudflare/CDN bot-detection silently discards requests that lack normal
-#    browser headers (User-Agent, Accept, etc.). The CDN returns HTTP 202
-#    "Accepted" with NO body as a fingerprint challenge, not a real 202.
-#    Fix: send realistic browser headers with every request.
-#
-#  HOST STRATEGY (tried in order):
-#    1. data-api.binance.vision  — Binance's official public data mirror.
-#       Explicitly designed for programmatic access; fewest geo restrictions.
-#    2. fapi.binance.com         — Main futures endpoint; accessible from many
-#       US cloud IPs when correct headers are sent.
-#    3. fapi1-4.binance.com      — CDN-fronted mirrors; may still 202 even with
-#       headers, but worth trying as last live-fetch resort.
-#
-#  PATH STRATEGY (tried in order per host):
-#    premiumIndex → ticker/24hr → exchangeInfo
-#    premiumIndex / ticker/24hr return a JSON list → _markets_from_premium_index
-#    exchangeInfo returns a dict {"symbols":[...]} → _markets_from_exchange_info
-#
-#  HARDCODED FALLBACK:
-#    If ALL live fetches fail (total network block), _HARDCODED_SYMBOLS is used.
-#    Contains ~420 USDT-M perpetuals as of April 2025.  May be slightly stale
-#    (missing very new listings) but allows the scan to run without a network
-#    dependency for symbol discovery.
-
-_FAPI_HOSTS = [
-    "https://data-api.binance.vision",   # public mirror — fewest geo blocks
-    "https://fapi.binance.com",          # main endpoint
-    "https://fapi1.binance.com",
-    "https://fapi2.binance.com",
-    "https://fapi3.binance.com",
-    "https://fapi4.binance.com",
-]
-_PREMIUM_INDEX_PATH  = "/fapi/v1/premiumIndex"
-_TICKER_24H_PATH     = "/fapi/v1/ticker/24hr"
-_EXCHANGE_INFO_PATH  = "/fapi/v1/exchangeInfo"
-
-# Browser-like headers — prevents Cloudflare 202 bot-challenge response
-_BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept":          "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Origin":          "https://www.binance.com",
-    "Referer":         "https://www.binance.com/",
-    "Cache-Control":   "no-cache",
-    "Pragma":          "no-cache",
-}
-
-# Hardcoded USDT-M perpetual symbol list — used only when all live fetches fail.
-# Accurate as of April 2025; may be missing very recently listed symbols.
-_HARDCODED_SYMBOLS = [
-    "BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT",
-    "AVAXUSDT","LINKUSDT","DOTUSDT","MATICUSDT","LTCUSDT","UNIUSDT","ATOMUSDT",
-    "ETCUSDT","XLMUSDT","BCHUSDT","ALGOUSDT","FILUSDT","VETUSDT","TRXUSDT",
-    "NEARUSDT","MANAUSDT","SANDUSDT","AXSUSDT","HBARUSDT","EGLDUSDT","THETAUSDT",
-    "FTMUSDT","AAVEUSDT","GRTUSDT","MKRUSDT","APEUSDT","OPUSDT","ARBUSDT",
-    "INJUSDT","SUIUSDT","SEIUSDT","TIAUSDT","WLDUSDT","ORDIUSDT","SATSUSDT",
-    "1000SHIBUSDT","1000BONKUSDT","1000PEPEUSDT","1000FLOKIUSDT","1000RATSUSDT",
-    "RUNEUSDT","STXUSDT","CFXUSDT","APEUSDT","LDOUSDT","CRVUSDT","SNXUSDT",
-    "COMPUSDT","YFIUSDT","SUSHIUSDT","KAVAUSDT","KSMUSDT","ZECUSDT","DASHUSDT",
-    "XMRUSDT","EOSUSDT","NEOUSDT","ONTUSDT","ZILUSDT","ICXUSDT","WAVESUSDT",
-    "QTUMUSDT","BATUSDT","ZRXUSDT","RENUSDT","BANDUSDT","STORJUSDT","COTIUSDT",
-    "ANKRUSDT","CHRUSDT","ALPHAUSDT","AUDIOUSDT","CELOUSDT","SKLUSDT","CTKUSDT",
-    "RLCUSDT","MTLUSDT","TOMOUSDT","DENTUSDT","HOTUSDT","IOTAUSDT","NKNUSDT",
-    "STMXUSDT","MDTUSDT","DATAUSDT","CTSIUSDT","HNTUSDT","CKBUSDT","XVGUSDT",
-    "SFPUSDT","BALUSDT","RSRUSDT","OCEANUSDT","SCUSDT","DGBUSDT","SXPUSDT",
-    "FLMUSDT","DUSKUSDT","SUPERUSDT","CVCUSDT","BTSUSDT","WRXUSDT","BNTUSDT",
-    "FORTHUSDT","KLAYUSDT","LITUSDT","CHZUSDT","CELRUSDT","REEFUSDT","ACMUSDT",
-    "ATMUSDT","SOUSUSDT","JUVUSDT","PSGUSDT","CITYUSDT","ILVUSDT","YGGUSDT",
-    "ALICEUSDT","TLMUSDT","BURGERUSDT","TVKUSDT","FARMUSDT","MASKUSDT","NFTUSDT",
-    "AGLDUSDT","RADUSDT","BETAUSDT","RAREUSDT","LAZIOUSDT","ADXUSDT","PORTOUSDT",
-    "POWRUSDT","VOXELUSDT","JASMYUSDT","AMPUSDT","BICOUSDT","FLUXUSDT","LRCUSDT",
-    "ELFUSDT","FTTUSDT","GALAUSDT","SPELLUSDT","ENSUSDT","PEOPLEUSDT","ANTUSDT",
-    "ROSEUSDT","DYDXUSDT","WOOUSDT","DARUSDT","GMTUSDT","APEUSDT","GALUSDT",
-    "ASTRUSDT","BTTCUSDT","STEEMUSDT","PHAUSDT","KNCUSDT","GLMRUSDT","AVAUSDT",
-    "LEVERUSDT","BLURUSDT","AMBUSDT","COMBOUSDT","CYBERUSDT","ARKUSDT","ARKMUSDT",
-    "BONDUSDT","OXTUSDT","GLMUSDT","IDUSDT","RDNTUSDT","HOOKUSDT","MAGICUSDT",
-    "HIGHUSDT","MINAUSDT","ASTRUSDT","AGIXUSDT","FETUSDT","OCEANUSDT","PHBUSDT",
-    "EDUUSDT","TUSDUSDT","IDUSDT","GASUSDT","GMXUSDT","PERPUSDT","STGUSDT",
-    "ACHUSDT","TUSDT","FXSUSDT","XVSUSDT","LUNA2USDT","API3USDT","QNTUSDT",
-    "CVXUSDT","FLOWUSDT","IMXUSDT","LOOMUSDT","PONDUSDT","SYNUSDT","FIDAUSDT",
-    "OGNUSDT","NOUSDT","WUSDT","JUPUSDT","PYTHUSDT","ALTUSDT","ACEUSDT",
-    "XAIUSDT","AIUSDT","MANTAUSDT","ZETAUSDT","AEVOUSDT","VANRYUSDT","BOMEUSDT",
-    "ETHFIUSDT","ENAUSDT","WIFUSDT","TNXUSDT","SAGAUSDT","TAOUSDT","REZUSDT",
-    "BBUSDT","NOTUSDT","IOUSDT","ZKUSDT","LISTAUSDT","ZROUSDT","GUSDT",
-    "BANANAUSDT","RENDERUSDT","TONUSDT","DOGSUSDT","SLFUSDT","EIGENUSDT",
-    "SCRUSDT","NEIROUSDT","HMSTRUSDT","REXUSDT","GOATUSDT","MOODENGUSDT",
-    "CHILLGUYUSDT","VIRTUALUSDT","MEUSDT","MOVEUSDT","VELODROMEUSDT","SPXUSDT",
-    "KAIAUSDT","POPCATUSDT","ACTUSDT","PNUTUSDT","COWUSDT","AGAUSDT","DEGUSDT",
-    "XDCUSDT","BROCCOLIUSDT","TROYUSDT","DEFIUSDT","SONICUSDT","PENGUUSDT",
-    "AIXBTUSDT","TRUMPUSDT","MELANIAUSDT","BIOUSDT","UXLINKUSDT","STOUSDT",
-    "HUSDT","LAYERUSDT","SYRUPUSDT","ATOUSDT","CATIUSDT","SWELLUSDT","IPUSDT",
-    "SHELLUSDT","REDUSDT","GUNUSDT","WALRUSDT","JELLYJELLYUSDT","MANTLEUSDT",
-]
-
-
-def _markets_from_premium_index(data: list) -> dict:
+class _MarketsContainer:
     """
-    v58: Build ccxt-compatible markets dict from premiumIndex response.
-    premiumIndex returns all active USDT-M perpetuals — no filtering needed.
-    [{symbol:"BTCUSDT", markPrice:"...", indexPrice:"...", ...}]
+    v59: Lightweight markets container — replaces ccxt exchange object.
+    ccxt is no longer needed; all data is fetched directly via aiohttp.
+    Exposes .markets and .markets_by_id (same shape as ccxt exchange),
+    and a no-op .close() for compatibility with existing call-sites.
+    """
+    def __init__(self):
+        self.markets:       dict = {}
+        self.markets_by_id: dict = {}
+
+    async def close(self):
+        pass   # nothing to close — no ccxt session
+
+
+def _make_exchange_with_proxy(proxy: str = "") -> "_MarketsContainer":
+    """Return a markets container (proxy arg kept for call-site compat)."""
+    return _MarketsContainer()
+
+
+def _make_exchange() -> "_MarketsContainer":
+    """Return a markets container (backwards-compatible)."""
+    return _MarketsContainer()
+
+
+# ── v59 (Bybit): Symbol fetch via Bybit public API ─────────────────────────
+#
+#  api.bybit.com has zero geo-restrictions — accessible from any US cloud IP
+#  without a proxy.  Endpoint: GET /v5/market/instruments-info?category=linear
+#  Bybit paginates at 1000 items per page; we loop with nextPageCursor.
+#
+#  _BYBIT_BASE / _BYBIT_INST_URL defined in the constants block above.
+
+
+def _markets_from_bybit(items: list) -> dict:
+    """
+    v59: Build ccxt-compatible markets dict from Bybit instruments-info list.
+    Each item: {symbol, contractType, status, baseCoin, quoteCoin, settleCoin, ...}
+    Only LinearPerpetual + Trading + quoteCoin==USDT are kept.
     """
     markets: dict = {}
-    for item in (data or []):
-        if not item or not isinstance(item, dict):
-            continue
-        raw = item.get("symbol", "")
-        if not raw or not raw.endswith("USDT"):
-            continue
-        base = raw[:-4]          # strip USDT suffix
-        quote = "USDT"
-        settle = "USDT"
-        ccxt_sym = f"{base}/{quote}:{settle}"
-        markets[ccxt_sym] = {
-            "id":     raw,
-            "symbol": ccxt_sym,
-            "base":   base,
-            "quote":  quote,
-            "settle": settle,
-            "type":   "swap",
-            "active": True,
-            "spot":   False,
-            "swap":   True,
-            "future": False,
-            "info":   item,
-        }
-    return markets
-
-
-def _markets_from_exchange_info(data: dict) -> dict:
-    """
-    v59: Parse /fapi/v1/exchangeInfo response into ccxt-compatible markets dict.
-    Response shape: {"symbols": [{symbol, contractType, status, ...}, ...]}
-    Only keeps PERPETUAL + TRADING USDT-settled pairs.
-    """
-    markets: dict = {}
-    for item in (data or {}).get("symbols", []):
+    for item in (items or []):
         if not isinstance(item, dict):
             continue
-        if item.get("contractType") != "PERPETUAL":
+        if item.get("contractType") != "LinearPerpetual":
             continue
-        if item.get("status") != "TRADING":
+        if item.get("status") != "Trading":
             continue
-        raw = item.get("symbol", "")
-        if not raw or not raw.endswith("USDT"):
+        raw   = item.get("symbol", "")
+        quote = item.get("quoteCoin", "")
+        if not raw or quote != "USDT":
             continue
-        base   = raw[:-4]
-        quote  = "USDT"
-        settle = "USDT"
+        base     = item.get("baseCoin", raw.replace("USDT", ""))
+        settle   = item.get("settleCoin", "USDT")
         ccxt_sym = f"{base}/{quote}:{settle}"
         markets[ccxt_sym] = {
             "id":     raw,
@@ -2541,137 +2421,84 @@ def _markets_from_exchange_info(data: dict) -> dict:
     return markets
 
 
-def _hardcoded_markets() -> dict:
-    """
-    v59: Build a markets dict from the hardcoded symbol list.
-    Used as an absolute last resort when all live fetches fail.
-    """
-    markets: dict = {}
-    for raw in _HARDCODED_SYMBOLS:
-        if not raw.endswith("USDT"):
-            continue
-        base     = raw[:-4]
-        quote    = "USDT"
-        settle   = "USDT"
-        ccxt_sym = f"{base}/{quote}:{settle}"
-        markets[ccxt_sym] = {
-            "id":     raw,
-            "symbol": ccxt_sym,
-            "base":   base,
-            "quote":  quote,
-            "settle": settle,
-            "type":   "swap",
-            "active": True,
-            "spot":   False,
-            "swap":   True,
-            "future": False,
-            "info":   {},
-        }
-    return markets
+# Keep old parsers as no-ops so any lingering call-sites don't crash
+def _markets_from_premium_index(data):  return {}
+def _markets_from_exchange_info(data):  return {}
 
 
 async def _fetch_symbol_list(proxy: str = "") -> dict:
     """
-    v59: Fetch active USDT-M perpetual symbols directly via aiohttp.
-
-    KEY FIXES vs v58:
-    • Browser-like headers sent on every request — this is the root cause of
-      HTTP 202 empty-body responses (Cloudflare bot fingerprinting rejects
-      requests that lack a User-Agent / Accept header).
-    • ssl=True (default) — ssl=False is itself a bot signal on some CDNs.
-    • data-api.binance.vision tried first — Binance's public data mirror, least
-      geo-restricted, works reliably from US cloud IPs (Streamlit Cloud / AWS).
-    • exchangeInfo added as third path per host with its own dict parser.
-    • 202 empty body retried once after 1 s (transient CDN hold).
-    • Hardcoded fallback: if ALL live fetches fail, returns ~420 known symbols
-      so the scan can still run without depending on network reachability.
-
-    Returns a ccxt-compatible markets dict (≥ 100 symbols).
+    v59 (Bybit): Fetch active USDT linear perpetuals from Bybit instruments-info.
+    Paginates automatically via nextPageCursor.
+    Returns a ccxt-compatible markets dict (≥ 50 symbols).
+    Falls back to hardcoded symbol list if the request fails.
     """
-    import json as _json
-    import asyncio as _asyncio
+    import json as _json, asyncio as _asyncio
 
     connector = aiohttp.TCPConnector(
         resolver=aiohttp.ThreadedResolver(),
         ttl_dns_cache=600,
         limit=10,
-        # ssl=True (default) — do NOT set ssl=False; it's a bot fingerprint
     )
     session_kwargs: dict = {
         "headers": _BROWSER_HEADERS,
         "timeout":  aiohttp.ClientTimeout(total=30, connect=10),
     }
-
-    _PATHS = [_PREMIUM_INDEX_PATH, _TICKER_24H_PATH, _EXCHANGE_INFO_PATH]
-
-    errors   = []
     req_kwargs: dict = {}
     if proxy:
         req_kwargs["proxy"] = proxy
 
-    async with aiohttp.ClientSession(connector=connector, **session_kwargs) as session:
-        for host in _FAPI_HOSTS:
-            for path in _PATHS:
-                url = host + path
-                is_exchange_info = (path == _EXCHANGE_INFO_PATH)
-                for attempt in (1, 2):      # retry once on 202 empty body
-                    try:
-                        async with session.get(url, **req_kwargs) as resp:
-                            if not (200 <= resp.status < 300):
-                                errors.append(f"{url}: HTTP {resp.status}")
-                                break       # non-2xx won't improve on retry
-                            raw = await resp.read()
-                            if not raw:
-                                if attempt == 1:
-                                    await _asyncio.sleep(1)
-                                    continue
-                                errors.append(
-                                    f"{url}: empty body (HTTP {resp.status})"
-                                )
-                                break
-                            data = _json.loads(raw)
-                            if is_exchange_info:
-                                if not isinstance(data, dict):
-                                    errors.append(
-                                        f"{url}: expected dict, got "
-                                        f"{type(data).__name__}"
-                                    )
-                                    break
-                                markets = _markets_from_exchange_info(data)
-                            else:
-                                if not data or not isinstance(data, list):
-                                    errors.append(
-                                        f"{url}: body not a list "
-                                        f"(got {type(data).__name__})"
-                                    )
-                                    break
-                                markets = _markets_from_premium_index(data)
-                            if len(markets) < 100:
-                                errors.append(
-                                    f"{url}: too few symbols ({len(markets)})"
-                                )
-                                break
-                            return markets   # ✓ success — live data
-                    except Exception as e:
-                        errors.append(
-                            f"{url}: {type(e).__name__}: {str(e)[:120]}"
-                        )
-                        break               # move to next path
+    all_items: list = []
+    cursor: str = ""
+    errors: list = []
 
-    # ── Hardcoded fallback — never raises, scan always starts ──────────────
+    async with aiohttp.ClientSession(connector=connector, **session_kwargs) as session:
+        for _page in range(10):   # safety cap — Bybit usually ≤ 3 pages at 1000/page
+            params: dict = {"category": "linear", "limit": "1000"}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                async with session.get(
+                    _BYBIT_INST_URL, params=params, **req_kwargs
+                ) as resp:
+                    if resp.status != 200:
+                        errors.append(
+                            f"instruments-info HTTP {resp.status} (page {_page+1})"
+                        )
+                        break
+                    raw = await resp.read()
+                    if not raw:
+                        errors.append(f"instruments-info empty body (page {_page+1})")
+                        break
+                    data = _json.loads(raw)
+                    if data.get("retCode", -1) != 0:
+                        errors.append(
+                            f"instruments-info retCode={data.get('retCode')} "
+                            f"msg={data.get('retMsg', '')}"
+                        )
+                        break
+                    result = data.get("result", {})
+                    all_items.extend(result.get("list", []))
+                    cursor = result.get("nextPageCursor", "")
+                    if not cursor:
+                        break   # no more pages
+            except Exception as e:
+                errors.append(f"instruments-info: {type(e).__name__}: {str(e)[:120]}")
+                break
+
+    if all_items:
+        markets = _markets_from_bybit(all_items)
+        if len(markets) >= 50:
+            return markets
+
+    # ── Hardcoded fallback ─────────────────────────────────────────────────
     fallback = _hardcoded_markets()
-    errors.append(
-        f"[FALLBACK] Using hardcoded symbol list ({len(fallback)} symbols). "
-        f"Live fetch errors:\n" + "\n".join(errors)
-    )
-    # Surface the warning to Streamlit if available
     try:
         import streamlit as _st
         _st.warning(
-            f"⚠️ Could not fetch live symbol list from Binance "
-            f"({len(_FAPI_HOSTS)} hosts × {len(_PATHS)} paths all failed). "
-            f"Using hardcoded fallback of {len(fallback)} symbols — "
-            f"very new listings may be missing.",
+            f"⚠️ Could not fetch live symbol list from Bybit "
+            f"({'; '.join(errors) or 'unknown error'}). "
+            f"Using hardcoded fallback of {len(fallback)} symbols.",
             icon="⚠️",
         )
     except Exception:
@@ -3822,81 +3649,81 @@ def calc_sma_cloud_bs_debug(h: np.ndarray, l: np.ndarray,
 
 async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarray]:
     """
-    v59: Direct Binance Futures klines fetch — host-rotating, US-safe.
+    v59 (Bybit): Direct Bybit Linear Perpetual kline fetch.
 
     Returns float64 ndarray shape (N, 6): [ts_ms, open, high, low, close, volume]
-    Returns None if all hosts fail.
+    Returns None on error / empty response.
 
-    Host order (defined in _KLINE_HOSTS):
-      1. data-api.binance.vision  — Binance public mirror, no geo-block on US IPs
-      2. fapi1-4.binance.com      — fallbacks (may be CDN-blocked on cloud IPs)
+    Bybit API:
+      GET /v5/market/kline?category=linear&symbol=BTCUSDT&interval=15&limit=1000
+      Response: {"result": {"list": [[startTime, open, high, low, close, volume, turnover], ...]}}
+      IMPORTANT: list is ordered NEWEST FIRST — reversed before returning.
+      Max limit: 1000 bars per request.
 
-    Per-host behaviour:
-      • 200 + data           → parse and return immediately ✓
-      • 200 + empty body     → CDN bot-block (202 variant); try next host
-      • 451 / 403 / 407      → geo/proxy block; try next host (or rotate proxy)
-      • 429 / 5xx            → rate-limit / server error; back-off + retry same host
-      • Any other non-2xx    → skip to next host
+    No geo-blocks — api.bybit.com works from any US cloud IP without a proxy.
+    Proxy still supported for users who want to route through one.
+    Retries up to 3x on network/rate-limit errors.
     """
     global _http_session
-    base_sym = sym.split(":")[0].replace("/", "")
-    interval = _TF_TO_BINANCE.get(tf, tf)
-    params   = {"symbol": base_sym, "interval": interval, "limit": limit}
+    import json as _json
 
-    for host in _KLINE_HOSTS:
-        url = host + _KLINE_PATH
-        for _att in range(3):
-            try:
-                async with sem:
-                    async with _http_session.get(url, params=params, proxy=_http_proxy) as resp:
-                        # ── proxy exhausted ──────────────────────────────
-                        if resp.status in (407, 403):
-                            rotated = await _rotate_proxy()
-                            if not rotated:
-                                return None
-                            continue   # retry same host with new proxy
+    base_sym = sym.split(":")[0].replace("/", "")   # BTC/USDT:USDT → BTCUSDT
+    interval = _TF_TO_BYBIT.get(tf, "15")
+    # Bybit max is 1000; clamp silently
+    req_limit = min(limit, _BYBIT_MAX_BARS)
+    params = {
+        "category": "linear",
+        "symbol":   base_sym,
+        "interval": interval,
+        "limit":    str(req_limit),
+    }
 
-                        # ── rate-limit / server error → back-off + retry ─
-                        if resp.status == 429 or resp.status >= 500:
-                            pass   # fall through to sleep below
+    for _att in range(3):
+        try:
+            async with sem:
+                req_kwargs: dict = {}
+                if _http_proxy:
+                    req_kwargs["proxy"] = _http_proxy
+                async with _http_session.get(
+                    _BYBIT_KLINE_URL, params=params, **req_kwargs
+                ) as resp:
+                    if resp.status in (407, 403):
+                        rotated = await _rotate_proxy()
+                        if not rotated:
+                            return None
+                        continue
+                    if resp.status == 429 or resp.status >= 500:
+                        pass   # back-off below
+                    elif resp.status != 200:
+                        return None
+                    else:
+                        raw = await resp.read()
+                        if not raw:
+                            return None
+                        data = _json.loads(raw)
+                        if data.get("retCode", -1) != 0:
+                            return None
+                        rows = data.get("result", {}).get("list", [])
+                        if not rows:
+                            return None
+                        # Bybit cols: [startTime, open, high, low, close, volume, turnover]
+                        # Slice first 6, cast float, reverse (Bybit returns newest-first)
+                        arr = np.array(rows, dtype=object)[:, :6].astype(np.float64)
+                        arr = arr[::-1]   # oldest-first to match Binance convention
+                        return arr
 
-                        # ── geo / CDN block → skip to next host ──────────
-                        elif resp.status == 451 or not (200 <= resp.status < 300):
-                            break   # inner for-loop: next host
+            # back-off (rate-limit / 5xx)
+            await asyncio.sleep(1.0 * (_att + 1) + random.random() * 0.5)
 
-                        else:
-                            # ── 2xx — check body isn't empty (202 bot-block)
-                            raw = await resp.read()
-                            if not raw or raw == b"":
-                                break   # empty body from CDN — next host
-
-                            import json as _json
-                            data = _json.loads(raw)
-                            if not data:
-                                break   # empty list — next host
-
-                            arr = np.array(data, dtype=object)[:, :6].astype(np.float64)
-                            return arr   # ✓ success
-
-                # back-off (rate-limit / 5xx path)
-                await asyncio.sleep(1.0 * (_att + 1) + random.random() * 0.5)
-
-            except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
-                rotated = await _rotate_proxy()
-                if not rotated:
-                    return None
-                break   # proxy rotated — restart from first host
-
-            except (aiohttp.ClientError, asyncio.TimeoutError):
-                if _att < 2:
-                    await asyncio.sleep(0.5 * (_att + 1) + random.random() * 0.3)
-                else:
-                    break   # give up on this host
-
-            except (ValueError, KeyError, Exception):
-                break   # parse error or unknown — next host
-
-    return None   # all hosts exhausted
+        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError):
+            rotated = await _rotate_proxy()
+            if not rotated:
+                return None
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            if _att < 2:
+                await asyncio.sleep(0.5 * (_att + 1) + random.random() * 0.3)
+        except Exception:
+            break
 
     return None
 
@@ -4051,7 +3878,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     # only need to cover (pivot_win_ts → now) + indicator warmup.
     # v46: _WARMUP raised 60 → 200 — KVO EMA(slow=55) needs ~200 bars to converge.
     _WARMUP   = 200
-    _API_CAP  = 1500
+    _API_CAP  = _BYBIT_MAX_BARS
     _tf_ms = {
         "1m":  60_000,   "3m":  180_000,  "5m":   300_000,
         "15m": 900_000,  "30m": 1_800_000, "1h":  3_600_000,
@@ -4455,7 +4282,7 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         # v38: dynamic bar limits based on actual pivot age (matches stage3_worker)
         # v46: _WARMUP raised 60 → 200 — KVO EMA(slow=55) needs ~200 bars to converge.
         _WARMUP   = 200
-        _API_CAP  = 1500
+        _API_CAP  = _BYBIT_MAX_BARS
         _tf_ms_d = {
             "1m":  60_000,   "3m":  180_000,  "5m":   300_000,
             "15m": 900_000,  "30m": 1_800_000, "1h":  3_600_000,
