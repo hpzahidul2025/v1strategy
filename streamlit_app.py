@@ -659,7 +659,7 @@ def _bg_scheduler_loop() -> None:
             f"🟢 <b>Binance Futures Scanner v58 — ONLINE</b>\n"
             f"🕐 {_ping_ts}\n"
             f"🤖 24/7 background scheduler started\n"
-            f"📡 Data: CryptoCompare → BinanceFutures (markets: Bybit)\n"
+            f"📡 Data: CryptoCompare → BinanceFutures  |  Markets: Bybit/OKX/fallback\n"
             f"⏱ First scan at {_next_ts} UTC"
         )
     except Exception as _pe:
@@ -756,8 +756,9 @@ UI_THROTTLE_S    = 0.25
 # CryptoCompare is UK/EU-based — NOT geo-blocked from Streamlit Cloud US servers.
 # OHLCV is sourced with e=BinanceFutures, so prices match Binance exactly.
 # Optional: add CC_API_KEY to Streamlit Secrets for higher rate-limits (free signup).
-_CC_BASE    = "https://min-api.cryptocompare.com/data/v2"   # OHLCV: histominute/histohour/histoday
-_BYBIT_BASE = "https://api.bybit.com"                        # Markets list (not geo-blocked from US)
+_CC_BASE    = "https://min-api.cryptocompare.com/data/v2"   # OHLCV endpoints only
+_BYBIT_BASE = "https://api.bybit.com"                        # markets cascade source 1
+_OKX_BASE   = "https://www.okx.com"                          # markets cascade source 2
 
 # ccxt TF string → (CryptoCompare endpoint, aggregate value)
 _TF_TO_CC: dict = {
@@ -792,68 +793,156 @@ class _FakeExchange:
         pass
 
 
-async def _load_binance_futures_markets() -> dict:
-    """
-    Fetch all active USDT linear perpetuals from Bybit's public instruments-info endpoint.
+# ── Markets helpers: cascade Bybit → OKX → hardcoded fallback ────────────────
+# CryptoCompare was acquired by CoinDesk Data (Jan 2025); their exchange pair-list
+# endpoint was removed. We now enumerate symbols from public APIs that are not
+# geo-blocked from Streamlit Cloud US servers. OHLCV still comes from
+# min-api.cryptocompare.com with e=BinanceFutures, so prices match Binance exactly.
 
-    Background: CryptoCompare (formerly used here) was acquired by CoinDesk Data in
-    January 2025. Their /data/all/exchanges/pairs?e=BinanceFutures endpoint was removed
-    in the migration. Bybit's public API is not geo-blocked from Streamlit Cloud US
-    servers, requires no API key, and lists the same USDT perpetual universe as Binance.
-    OHLCV data still comes from CryptoCompare (e=BinanceFutures) via fetch_klines.
+def _make_market_entry(base: str) -> dict:
+    return {
+        "type":   "swap",
+        "active": True,
+        "quote":  "USDT",
+        "settle": "USDT",
+        "id":     f"{base}USDT",
+        "base":   base,
+    }
 
-    Returns a ccxt-style {symbol: market_info} dict.
-    Bybit endpoint: /v5/market/instruments-info?category=linear
-    """
-    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+
+async def _try_bybit_markets(session: aiohttp.ClientSession) -> dict:
+    """Tier-1: Bybit public linear instruments (no auth, paginates via cursor)."""
     markets: dict = {}
     cursor: str = ""
+    for _ in range(5):                                   # max 5 pages × 1000
+        params: dict = {"category": "linear", "limit": 1000}
+        if cursor:
+            params["cursor"] = cursor
+        async with session.get(
+            f"{_BYBIT_BASE}/v5/market/instruments-info", params=params
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Bybit HTTP {resp.status}")
+            raw = await resp.read()
+            if not raw:
+                raise RuntimeError("Bybit returned empty response")
+            data = json.loads(raw)
+        if data.get("retCode") != 0:
+            raise RuntimeError(f"Bybit: {data.get('retMsg', 'unknown')}")
+        for item in data.get("result", {}).get("list", []):
+            if item.get("quoteCoin")    != "USDT":            continue
+            if item.get("contractType") != "LinearPerpetual": continue
+            if item.get("status")       != "Trading":         continue
+            base = item["baseCoin"]
+            markets[f"{base}/USDT:USDT"] = _make_market_entry(base)
+        cursor = data.get("result", {}).get("nextPageCursor", "")
+        if not cursor:
+            break
+    return markets
 
+
+async def _try_okx_markets(session: aiohttp.ClientSession) -> dict:
+    """Tier-2: OKX public USDT linear swaps (no auth, not geo-blocked from US)."""
+    markets: dict = {}
+    async with session.get(
+        f"{_OKX_BASE}/api/v5/public/instruments",
+        params={"instType": "SWAP"},
+    ) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"OKX HTTP {resp.status}")
+        raw = await resp.read()
+        if not raw:
+            raise RuntimeError("OKX returned empty response")
+        data = json.loads(raw)
+    if data.get("code") != "0":
+        raise RuntimeError(f"OKX: {data.get('msg', 'unknown')}")
+    for item in data.get("data", []):
+        if item.get("settleCcy") != "USDT": continue
+        if item.get("ctType")    != "linear": continue
+        if item.get("state")     != "live":   continue
+        parts = item.get("instId", "").split("-")   # e.g. BTC-USDT-SWAP
+        if len(parts) != 3 or parts[2] != "SWAP":  continue
+        base = parts[0]
+        markets[f"{base}/USDT:USDT"] = _make_market_entry(base)
+    return markets
+
+
+def _hardcoded_markets() -> dict:
+    """Tier-3: curated static list — always succeeds, covers ~200 active perps."""
+    bases = [
+        # ── mega-caps & large-caps ───────────────────────────────────────────
+        "BTC","ETH","BNB","XRP","SOL","ADA","DOGE","AVAX","DOT","MATIC",
+        "LTC","LINK","UNI","ATOM","ETC","NEAR","APT","ARB","OP","SUI",
+        "INJ","TIA","SEI","FIL","VET","ALGO","BCH","XLM","XMR","ZEC",
+        "GRT","RUNE","HBAR","EGLD","FLOW","QNT","RPL","LDO","DYDX","GMX",
+        # ── mid-caps ────────────────────────────────────────────────────────
+        "APE","FTM","SAND","MANA","AXS","GALA","CHZ","ENJ","THETA",
+        "AAVE","COMP","MKR","SNX","CRV","1INCH","SUSHI","YFI","BAL",
+        "ICP","TRX","BLUR","MAGIC","STX","FET","RNDR","OCEAN","AGIX",
+        "JTO","PYTH","STRK","PENDLE","SSV","RDNT","METIS","CFX","CYBER",
+        "ID","EDU","HIGH","WOO","MASK","ACE","NFP","PIXEL","PORTAL",
+        "MANTA","ALT","DYM","NTRN","ZETA","JUP","BOME","MEME","SAGA",
+        "ETHFI","EIGEN","ZK","RENDER","TURBO","MEW","BRETT","TRUMP",
+        # ── meme & newer listings ────────────────────────────────────────────
+        "PEPE","WIF","BONK","ORDI","FLOKI","SHIB",
+        "1000PEPE","1000SHIB","1000BONK","1000FLOKI",
+        "DOGS","HMSTR","CATI","NEIRO","1000CATS","PNUT","ACT",
+        "MOODENG","GRASS","MOTHER","FARTCOIN","VINE","AI","SIGN",
+        # ── DeFi & infra ────────────────────────────────────────────────────
+        "ANKR","BAT","DASH","GRT","HBAR","HOT","ICX","KSM","NEO",
+        "QTUM","RSR","RVN","SC","STORJ","WAVES","XTZ","ZEN","ZIL",
+        "BAND","BAR","BEL","BLZ","C98","CAKE","CELO","CLV","COTI",
+        "CTK","CTSI","DAR","DENT","EOS","FLOW","FTT","FXS","GMT",
+        "GNO","HIGH","HNT","IOST","IOTX","JOE","JST","KAVA","KNC",
+        "LIT","LQTY","LRC","LUNA","LUNC","MDT","MLN","MTL","NKN",
+        "NMR","OGN","OM","OMG","ONE","ONT","PERP","PHA","POLS",
+        "POND","PROM","QKC","RAD","REEF","REI","ROSE","SATS",
+        "SFP","SKL","SLP","SNT","SPELL","STEEM","STG","STMX",
+        "SXP","T","TOMO","TRU","TWT","UMA","UNFI","VGX",
+        "WAXP","WING","XEM","XNO","XVS","YGG","ZRX",
+        # ── recent 2025 listings ─────────────────────────────────────────────
+        "LAYER","BERA","IP","RED","THE","KAITO","NIL","HAEDAL",
+        "KERNEL","WAL","IO","LISTA","COOKIE","TST","BB","SAFE","SAGA",
+    ]
+    return {f"{b}/USDT:USDT": _make_market_entry(b) for b in dict.fromkeys(bases)}
+
+
+async def _load_binance_futures_markets() -> dict:
+    """
+    Load the USDT perpetual symbol universe via a three-tier cascade:
+
+      Tier 1 — Bybit /v5/market/instruments-info  (public, paginates, not geo-blocked)
+      Tier 2 — OKX   /api/v5/public/instruments   (public fallback)
+      Tier 3 — Hardcoded curated list              (always succeeds, ~200 symbols)
+
+    OHLCV data is still fetched from CryptoCompare (e=BinanceFutures), so all
+    prices match Binance Futures exactly regardless of which tier supplies the list.
+
+    Background: CryptoCompare was acquired by CoinDesk Data in January 2025 and
+    their /data/all/exchanges/pairs endpoint was removed in the migration.
+    """
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=aiohttp.ClientTimeout(total=30),
+        headers={"User-Agent": "Mozilla/5.0"},
     ) as session:
-        # Bybit paginates at 1000 per page; loop until no nextPageCursor
-        while True:
-            params: dict = {"category": "linear", "limit": 1000}
-            if cursor:
-                params["cursor"] = cursor
-            async with session.get(
-                f"{_BYBIT_BASE}/v5/market/instruments-info", params=params
-            ) as resp:
-                data = await resp.json(content_type=None)
+        try:
+            markets = await _try_bybit_markets(session)
+            if markets:
+                return markets
+        except Exception:
+            pass
 
-            if data.get("retCode") != 0:
-                raise RuntimeError(
-                    f"Bybit instruments-info failed: {data.get('retMsg', 'unknown')}"
-                )
+        try:
+            markets = await _try_okx_markets(session)
+            if markets:
+                return markets
+        except Exception:
+            pass
 
-            for item in data.get("result", {}).get("list", []):
-                # Only active USDT-settled linear perpetuals (no expiry date)
-                if item.get("quoteCoin") != "USDT":
-                    continue
-                if item.get("contractType") != "LinearPerpetual":
-                    continue
-                if item.get("status") != "Trading":
-                    continue
-                base_sym = item["baseCoin"]
-                sym = f"{base_sym}/USDT:USDT"
-                markets[sym] = {
-                    "type":   "swap",
-                    "active": True,
-                    "quote":  "USDT",
-                    "settle": "USDT",
-                    "id":     f"{base_sym}USDT",
-                    "base":   base_sym,
-                }
-
-            cursor = data.get("result", {}).get("nextPageCursor", "")
-            if not cursor:
-                break
-
-    if not markets:
-        raise RuntimeError("No USDT perpetual pairs returned by Bybit instruments-info")
-    return markets
+    # Tier 3 — always works, no network needed
+    return _hardcoded_markets()
 
 
 # Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
@@ -2374,12 +2463,13 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════
 #  API KEY HELPER  — CryptoCompare OHLCV (optional, improves rate limits)
 # ══════════════════════════════════════════════════════════════════════
-#  NOTE: CryptoCompare was acquired by CoinDesk Data (Jan 2025).
-#  The OHLCV endpoints (histominute/histohour/histoday) still work on
-#  min-api.cryptocompare.com. The pair-list endpoint was removed;
-#  markets are now loaded from Bybit's public instruments-info API.
+#  NOTE: CryptoCompare was acquired by CoinDesk Data in January 2025.
+#  Their pair-list endpoint was removed. Symbol universe is now loaded
+#  via a cascade: Bybit → OKX → hardcoded curated fallback list.
+#  OHLCV (histominute/histohour/histoday with e=BinanceFutures) still
+#  works on min-api.cryptocompare.com and prices match Binance exactly.
 #
-#  To add a free CryptoCompare API key (raises OHLCV rate limits):
+#  To set a free CryptoCompare API key (raises OHLCV rate limits):
 #    1. Register at https://www.cryptocompare.com/cryptopian/api-keys
 #    2. In Streamlit → app → ⋮ → Settings → Secrets, add:
 #       CC_API_KEY = "your-key-here"
@@ -3971,10 +4061,10 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         return logs
     try:
         if sym not in ex.markets:
-            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found in Bybit USDT perpetuals list"))
+            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found in markets universe (Bybit/OKX/fallback)"))
             return logs
         logs.append(("Data Source", "✅ PASS",
-            f"Bybit instruments-info — {len(ex.markets)} USDT pairs loaded"))
+            f"Markets loaded — {len(ex.markets)} USDT perpetuals"))
 
         sem = asyncio.Semaphore(10)
         pivot_tf  = cfg["pivot_tf"]
@@ -4804,11 +4894,11 @@ def main():
         )
         st.markdown(
             f'<div class="sc-proxy-ok" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;">'
-            f'📡&nbsp;<b>Data: CryptoCompare → BinanceFutures &nbsp;|&nbsp; Markets: Bybit</b>'
+            f'📡&nbsp;<b>Data: CryptoCompare → BinanceFutures</b>'
             f'&nbsp;&mdash;&nbsp;{_key_chip}'
             + (f'&nbsp;{_pairs_chip}' if _pairs_chip else '')
             + f'&nbsp;&middot;&nbsp;<span style="color:#5a8a5a;font-size:0.78rem">'
-            f'no proxy needed · not geo-blocked</span></div>',
+            f'Markets: Bybit/OKX/fallback · no proxy needed</span></div>',
             unsafe_allow_html=True)
 
         # ── Mode + Timeframes row ─────────────────────────────────────
