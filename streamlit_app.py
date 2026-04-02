@@ -659,7 +659,7 @@ def _bg_scheduler_loop() -> None:
             f"🟢 <b>Binance Futures Scanner v58 — ONLINE</b>\n"
             f"🕐 {_ping_ts}\n"
             f"🤖 24/7 background scheduler started\n"
-            f"📡 Data: CryptoCompare → BinanceFutures\n"
+            f"📡 Data: CryptoCompare → BinanceFutures (markets: Bybit)\n"
             f"⏱ First scan at {_next_ts} UTC"
         )
     except Exception as _pe:
@@ -756,8 +756,8 @@ UI_THROTTLE_S    = 0.25
 # CryptoCompare is UK/EU-based — NOT geo-blocked from Streamlit Cloud US servers.
 # OHLCV is sourced with e=BinanceFutures, so prices match Binance exactly.
 # Optional: add CC_API_KEY to Streamlit Secrets for higher rate-limits (free signup).
-_CC_BASE    = "https://min-api.cryptocompare.com/data/v2"   # OHLCV endpoints (histominute/histohour/histoday)
-_CC_BASE_V1 = "https://min-api.cryptocompare.com/data"       # non-v2 endpoints (exchange pairs list)
+_CC_BASE    = "https://min-api.cryptocompare.com/data/v2"   # OHLCV: histominute/histohour/histoday
+_BYBIT_BASE = "https://api.bybit.com"                        # Markets list (not geo-blocked from US)
 
 # ccxt TF string → (CryptoCompare endpoint, aggregate value)
 _TF_TO_CC: dict = {
@@ -794,45 +794,65 @@ class _FakeExchange:
 
 async def _load_binance_futures_markets() -> dict:
     """
-    Fetch all active Binance USDT perpetuals from CryptoCompare pair mapping.
-    Returns a ccxt-style {symbol: market_info} dict.
-    CryptoCompare endpoint: /data/all/exchanges/pairs?e=BinanceFutures&tsym=USDT
-    """
-    api_key = _get_cc_api_key()
-    params: dict = {"e": "BinanceFutures", "tsym": "USDT"}
-    if api_key:
-        params["api_key"] = api_key
+    Fetch all active USDT linear perpetuals from Bybit's public instruments-info endpoint.
 
+    Background: CryptoCompare (formerly used here) was acquired by CoinDesk Data in
+    January 2025. Their /data/all/exchanges/pairs?e=BinanceFutures endpoint was removed
+    in the migration. Bybit's public API is not geo-blocked from Streamlit Cloud US
+    servers, requires no API key, and lists the same USDT perpetual universe as Binance.
+    OHLCV data still comes from CryptoCompare (e=BinanceFutures) via fetch_klines.
+
+    Returns a ccxt-style {symbol: market_info} dict.
+    Bybit endpoint: /v5/market/instruments-info?category=linear
+    """
     connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+    markets: dict = {}
+    cursor: str = ""
+
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=aiohttp.ClientTimeout(total=30),
     ) as session:
-        async with session.get(f"{_CC_BASE_V1}/all/exchanges/pairs", params=params) as resp:
-            data = await resp.json(content_type=None)
+        # Bybit paginates at 1000 per page; loop until no nextPageCursor
+        while True:
+            params: dict = {"category": "linear", "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            async with session.get(
+                f"{_BYBIT_BASE}/v5/market/instruments-info", params=params
+            ) as resp:
+                data = await resp.json(content_type=None)
 
-    if data.get("Response") != "Success":
-        raise RuntimeError(
-            f"CryptoCompare pair list failed: {data.get('Message', 'unknown')}"
-        )
+            if data.get("retCode") != 0:
+                raise RuntimeError(
+                    f"Bybit instruments-info failed: {data.get('retMsg', 'unknown')}"
+                )
 
-    markets: dict = {}
-    exchange_data = data.get("Data", {}).get("BinanceFutures", {})
-    for base_sym, quote_dict in exchange_data.items():
-        if "USDT" not in quote_dict:
-            continue
-        sym = f"{base_sym}/USDT:USDT"
-        markets[sym] = {
-            "type":   "swap",
-            "active": True,
-            "quote":  "USDT",
-            "settle": "USDT",
-            "id":     f"{base_sym}USDT",
-            "base":   base_sym,
-        }
+            for item in data.get("result", {}).get("list", []):
+                # Only active USDT-settled linear perpetuals (no expiry date)
+                if item.get("quoteCoin") != "USDT":
+                    continue
+                if item.get("contractType") != "LinearPerpetual":
+                    continue
+                if item.get("status") != "Trading":
+                    continue
+                base_sym = item["baseCoin"]
+                sym = f"{base_sym}/USDT:USDT"
+                markets[sym] = {
+                    "type":   "swap",
+                    "active": True,
+                    "quote":  "USDT",
+                    "settle": "USDT",
+                    "id":     f"{base_sym}USDT",
+                    "base":   base_sym,
+                }
+
+            cursor = data.get("result", {}).get("nextPageCursor", "")
+            if not cursor:
+                break
 
     if not markets:
-        raise RuntimeError("No USDT perpetual pairs returned by CryptoCompare")
+        raise RuntimeError("No USDT perpetual pairs returned by Bybit instruments-info")
     return markets
 
 
@@ -2352,9 +2372,14 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  API KEY HELPER  — CryptoCompare (optional, improves rate limits)
+#  API KEY HELPER  — CryptoCompare OHLCV (optional, improves rate limits)
 # ══════════════════════════════════════════════════════════════════════
-#  To add a free API key:
+#  NOTE: CryptoCompare was acquired by CoinDesk Data (Jan 2025).
+#  The OHLCV endpoints (histominute/histohour/histoday) still work on
+#  min-api.cryptocompare.com. The pair-list endpoint was removed;
+#  markets are now loaded from Bybit's public instruments-info API.
+#
+#  To add a free CryptoCompare API key (raises OHLCV rate limits):
 #    1. Register at https://www.cryptocompare.com/cryptopian/api-keys
 #    2. In Streamlit → app → ⋮ → Settings → Secrets, add:
 #       CC_API_KEY = "your-key-here"
@@ -3946,10 +3971,10 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
         return logs
     try:
         if sym not in ex.markets:
-            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found in CryptoCompare BinanceFutures pairs"))
+            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found in Bybit USDT perpetuals list"))
             return logs
         logs.append(("Data Source", "✅ PASS",
-            f"CryptoCompare BinanceFutures — {len(ex.markets)} USDT pairs loaded"))
+            f"Bybit instruments-info — {len(ex.markets)} USDT pairs loaded"))
 
         sem = asyncio.Semaphore(10)
         pivot_tf  = cfg["pivot_tf"]
@@ -4779,11 +4804,11 @@ def main():
         )
         st.markdown(
             f'<div class="sc-proxy-ok" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;">'
-            f'📡&nbsp;<b>Data: CryptoCompare → BinanceFutures</b>'
+            f'📡&nbsp;<b>Data: CryptoCompare → BinanceFutures &nbsp;|&nbsp; Markets: Bybit</b>'
             f'&nbsp;&mdash;&nbsp;{_key_chip}'
             + (f'&nbsp;{_pairs_chip}' if _pairs_chip else '')
             + f'&nbsp;&middot;&nbsp;<span style="color:#5a8a5a;font-size:0.78rem">'
-            f'EU/UK servers · no proxy needed</span></div>',
+            f'no proxy needed · not geo-blocked</span></div>',
             unsafe_allow_html=True)
 
         # ── Mode + Timeframes row ─────────────────────────────────────
