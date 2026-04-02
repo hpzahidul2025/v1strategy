@@ -756,7 +756,8 @@ UI_THROTTLE_S    = 0.25
 # CryptoCompare is UK/EU-based — NOT geo-blocked from Streamlit Cloud US servers.
 # OHLCV is sourced with e=BinanceFutures, so prices match Binance exactly.
 # Optional: add CC_API_KEY to Streamlit Secrets for higher rate-limits (free signup).
-_CC_BASE = "https://min-api.cryptocompare.com/data/v2"
+_CC_BASE    = "https://min-api.cryptocompare.com/data/v2"   # OHLCV endpoints (histominute/histohour/histoday)
+_CC_BASE_V1 = "https://min-api.cryptocompare.com/data"       # non-v2 endpoints (exchange pairs list)
 
 # ccxt TF string → (CryptoCompare endpoint, aggregate value)
 _TF_TO_CC: dict = {
@@ -795,7 +796,7 @@ async def _load_binance_futures_markets() -> dict:
     """
     Fetch all active Binance USDT perpetuals from CryptoCompare pair mapping.
     Returns a ccxt-style {symbol: market_info} dict.
-    CryptoCompare endpoint: /data/v2/all/exchanges/pairs?e=BinanceFutures&tsym=USDT
+    CryptoCompare endpoint: /data/all/exchanges/pairs?e=BinanceFutures&tsym=USDT
     """
     api_key = _get_cc_api_key()
     params: dict = {"e": "BinanceFutures", "tsym": "USDT"}
@@ -807,7 +808,7 @@ async def _load_binance_futures_markets() -> dict:
         connector=connector,
         timeout=aiohttp.ClientTimeout(total=30),
     ) as session:
-        async with session.get(f"{_CC_BASE}/all/exchanges/pairs", params=params) as resp:
+        async with session.get(f"{_CC_BASE_V1}/all/exchanges/pairs", params=params) as resp:
             data = await resp.json(content_type=None)
 
     if data.get("Response") != "Success":
