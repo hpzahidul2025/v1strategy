@@ -1,6 +1,6 @@
 """
-Bybit Futures Scanner - ULTRA-FAST Edition v57
-Streamlit Web App — Bybit (no proxy required)
+Binance Futures Scanner - ULTRA-FAST Edition v57
+Streamlit Web App — Binance via proxy (bypasses geo-block on cloud servers)
 
 v57 24/7 BACKGROUND SCHEDULER + TELEGRAM (no browser needed):
   - Background daemon thread runs 15M + 5M scans every 15 min, clock-aligned
@@ -397,7 +397,6 @@ _CPU_POOL = ThreadPoolExecutor(max_workers=min(32, (os.cpu_count() or 4) * 4))
 import numpy as np
 import pandas as pd
 import aiohttp
-import ccxt.async_support as ccxt_async
 
 # ══════════════════════════════════════════════════════════════════════
 #  TELEGRAM ALERTS  — v57: ported from CLI v56, extended for 24/7 bg scheduler
@@ -500,7 +499,7 @@ def _tg_send_signals(
 
     ts   = time.strftime("%d %b %Y  %H:%M UTC", time.gmtime())
     body = [
-        "📡 <b>BYBIT FUTURES SIGNALS</b>",
+        "📡 <b>BINANCE FUTURES SIGNALS</b>",
         f"🕐 {ts}",
         f"📊 {label}",
         "━━━━━━━━━━━━━━━━━━━━━",
@@ -556,28 +555,19 @@ def _bg_next_quarter(now: float) -> float:
 async def _bg_run_one_async(mode_key: str) -> dict:
     """
     Self-contained scan coroutine for the background thread.
-    Mirrors run_scan() but uses _bg_cache instead of st.session_state,
-    and accepts no progress_callback (headless — no UI to update).
+    v58: Uses CryptoCompare for markets + klines — no proxy needed.
     """
-    global _http_session, _http_proxy, _proxy_list, _proxy_idx, _proxy_lock
+    global _http_session
 
-    cfg     = MODES[mode_key]
-    proxies = _get_all_proxies()
+    cfg = MODES[mode_key]
 
-    # ── Market cache (module-level, survives across scans) ──────────
+    # Module-level market cache — survives across scans
     if "markets" not in _bg_cache:
-        ex, active_proxy, proxy_idx = await _try_load_markets(proxies)
-        _bg_cache["markets"]          = ex.markets
-        _bg_cache["active_proxy"]     = active_proxy
-        _bg_cache["active_proxy_idx"] = proxy_idx
-    else:
-        active_proxy = _bg_cache.get("active_proxy", proxies[0] if proxies else "")
-        proxy_idx    = _bg_cache.get("active_proxy_idx", 0)
-        ex = _make_exchange_with_proxy(active_proxy)
-        ex.markets = _bg_cache["markets"]
-        ex.markets_by_id = {m["id"]: m for m in ex.markets.values()}
+        _bg_cache["markets"] = await _load_binance_futures_markets()
 
-    # ── Shared aiohttp session (same setup as run_scan) ─────────────
+    ex = _FakeExchange(_bg_cache["markets"])
+
+    # Shared aiohttp session
     _scan_connector = aiohttp.TCPConnector(
         limit=200, keepalive_timeout=30, ttl_dns_cache=600,
         resolver=aiohttp.ThreadedResolver(),
@@ -587,10 +577,6 @@ async def _bg_run_one_async(mode_key: str) -> dict:
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
     )
     _http_session = _scan_session
-    _http_proxy   = active_proxy if active_proxy else None
-    _proxy_list   = proxies
-    _proxy_idx    = proxy_idx
-    _proxy_lock   = asyncio.Lock()
 
     try:
         symbols = sorted([
@@ -670,9 +656,10 @@ def _bg_scheduler_loop() -> None:
         _ping_ts = _dt.datetime.utcnow().strftime("%d %b %Y  %H:%M UTC")
         _next_ts = _dt.datetime.utcfromtimestamp(_bg_next_quarter(time.time())).strftime("%H:%M UTC")
         _tg_send_sync(
-            f"🟢 <b>Bybit Futures Scanner v57 — ONLINE</b>\n"
+            f"🟢 <b>Binance Futures Scanner v58 — ONLINE</b>\n"
             f"🕐 {_ping_ts}\n"
             f"🤖 24/7 background scheduler started\n"
+            f"📡 Data: CryptoCompare → BinanceFutures\n"
             f"⏱ First scan at {_next_ts} UTC"
         )
     except Exception as _pe:
@@ -760,30 +747,96 @@ def _start_bg_scheduler() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-MAX_CONCURRENT   = 75     # ⚡ v43: lowered from 150 — fewer 429s → higher real throughput
+MAX_CONCURRENT   = 60     # CryptoCompare rate-limit friendly
 RETRY_ATTEMPTS   = 3
-RETRY_BASE_DELAY = 0.5   # seconds; doubles each attempt
-UI_THROTTLE_S    = 0.25  # min seconds between progress UI refreshes
+RETRY_BASE_DELAY = 0.5
+UI_THROTTLE_S    = 0.25
 
-# ── Direct Bybit Linear klines endpoint ──────────────────────────────────────
-# Map ccxt-style TF strings → Bybit API interval strings
-_TF_TO_BYBIT = {
-    "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-    "1h": "60", "2h": "120", "4h": "240", "6h": "360", "8h": "480", "12h": "720",
-    "1d": "D", "1w": "W", "1M": "M",
+# ── CryptoCompare data aggregator (v58: replaces Binance FAPI) ───────────────
+# CryptoCompare is UK/EU-based — NOT geo-blocked from Streamlit Cloud US servers.
+# OHLCV is sourced with e=BinanceFutures, so prices match Binance exactly.
+# Optional: add CC_API_KEY to Streamlit Secrets for higher rate-limits (free signup).
+_CC_BASE = "https://min-api.cryptocompare.com/data/v2"
+
+# ccxt TF string → (CryptoCompare endpoint, aggregate value)
+_TF_TO_CC: dict = {
+    "1m":  ("histominute",  1),
+    "3m":  ("histominute",  3),
+    "5m":  ("histominute",  5),
+    "15m": ("histominute", 15),
+    "30m": ("histominute", 30),
+    "1h":  ("histohour",    1),
+    "2h":  ("histohour",    2),
+    "4h":  ("histohour",    4),
+    "6h":  ("histohour",    6),
+    "8h":  ("histohour",    8),
+    "12h": ("histohour",   12),
+    "1d":  ("histoday",     1),
 }
-_BYBIT_URL = "https://api.bybit.com/v5/market/kline"
+
+def _get_cc_api_key() -> str:
+    """Optional CryptoCompare API key from Streamlit Secrets / env."""
+    try:
+        return st.secrets.get("CC_API_KEY", "") or ""
+    except Exception:
+        return os.environ.get("CC_API_KEY", "") or ""
+
+
+class _FakeExchange:
+    """Minimal exchange wrapper holding the markets dict — no ccxt needed."""
+    def __init__(self, markets: dict):
+        self.markets = markets
+        self.markets_by_id = {m["id"]: m for m in markets.values()}
+    async def close(self):
+        pass
+
+
+async def _load_binance_futures_markets() -> dict:
+    """
+    Fetch all active Binance USDT perpetuals from CryptoCompare pair mapping.
+    Returns a ccxt-style {symbol: market_info} dict.
+    CryptoCompare endpoint: /data/v2/all/exchanges/pairs?e=BinanceFutures&tsym=USDT
+    """
+    api_key = _get_cc_api_key()
+    params: dict = {"e": "BinanceFutures", "tsym": "USDT"}
+    if api_key:
+        params["api_key"] = api_key
+
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+    async with aiohttp.ClientSession(
+        connector=connector,
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as session:
+        async with session.get(f"{_CC_BASE}/all/exchanges/pairs", params=params) as resp:
+            data = await resp.json(content_type=None)
+
+    if data.get("Response") != "Success":
+        raise RuntimeError(
+            f"CryptoCompare pair list failed: {data.get('Message', 'unknown')}"
+        )
+
+    markets: dict = {}
+    exchange_data = data.get("Data", {}).get("BinanceFutures", {})
+    for base_sym, quote_dict in exchange_data.items():
+        if "USDT" not in quote_dict:
+            continue
+        sym = f"{base_sym}/USDT:USDT"
+        markets[sym] = {
+            "type":   "swap",
+            "active": True,
+            "quote":  "USDT",
+            "settle": "USDT",
+            "id":     f"{base_sym}USDT",
+            "base":   base_sym,
+        }
+
+    if not markets:
+        raise RuntimeError("No USDT perpetual pairs returned by CryptoCompare")
+    return markets
+
 
 # Module-level aiohttp session — created once per scan/debug, shared by all fetchers.
-# Using a direct session bypasses all ccxt overhead (JSON schema validation,
-# market normalisation, rate-limit bookkeeping) for candle fetches.
 _http_session: Optional[aiohttp.ClientSession] = None
-_http_proxy:   Optional[str] = None   # active proxy URL for direct klines fetches
-
-# v49: mid-scan proxy rotation
-_proxy_list:   list  = []
-_proxy_idx:    int   = 0
-_proxy_lock:   Optional[asyncio.Lock] = None
 
 KC_LEN        = 20
 KC_MULT       = 2.0
@@ -901,7 +954,7 @@ def _fmt_ts(ms: int, tz_h: float, tz_label: str, time_fmt: str = "24h") -> str:
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Bybit Futures Scanner v57",
+    page_title="Binance Futures Scanner v58",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -2298,88 +2351,13 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PROXY / EXCHANGE HELPERS  — multi-proxy fallback
+#  API KEY HELPER  — CryptoCompare (optional, improves rate limits)
 # ══════════════════════════════════════════════════════════════════════
-
-# Secret keys checked in priority order (add more as needed)
-PROXY_KEYS = ["PROXY_URL", "PROXY_URL_2", "PROXY_URL_3", "PROXY_URL_4"]
-
-
-def _get_all_proxies() -> list:
-    """Proxy disabled — Bybit does not require a proxy."""
-    return []
-
-
-def _get_proxy() -> str:
-    """Return the first available proxy URL (backwards-compatible helper)."""
-    proxies = _get_all_proxies()
-    return proxies[0] if proxies else ""
-
-
-def _proxy_label(proxy: str) -> str:
-    """Return a safe display label (host:port only, no credentials)."""
-    if not proxy:
-        return "none"
-    return proxy.split("@")[-1] if "@" in proxy else proxy.split("//")[-1]
-
-
-def _make_exchange_with_proxy(proxy: str = "") -> ccxt_async.bybit:
-    """Return a configured bybit exchange (proxy disabled)."""
-    cfg: dict = {
-        "enableRateLimit": True,
-        "options": {"defaultType": "linear"},
-    }
-    return ccxt_async.bybit(cfg)
-
-
-def _make_exchange() -> ccxt_async.bybit:
-    """Return exchange (backwards-compatible)."""
-    return _make_exchange_with_proxy("")
-
-
-async def _try_load_markets(proxies: list) -> tuple:
-    """
-    Attempt load_markets() across proxy list until one succeeds.
-    Returns (exchange, active_proxy_url, active_proxy_index).
-    Raises RuntimeError if all proxies fail.
-    """
-    errors = []
-    for i, proxy in enumerate(proxies if proxies else [""]):
-        ex = _make_exchange_with_proxy(proxy)
-        try:
-            await ex.load_markets()
-            return ex, proxy, i
-        except Exception as e:
-            await ex.close()
-            errors.append(f"Proxy {i+1} ({_proxy_label(proxy)}): {e}")
-    raise RuntimeError(
-        "All proxies failed to connect:\n" + "\n".join(errors)
-    )
-
-
-async def _rotate_proxy() -> bool:
-    """
-    v49: Mid-scan proxy rotation.
-    Called when fetch_klines detects the active proxy slot is bandwidth-exhausted
-    (407 Proxy Auth Required, 403 Forbidden, or hard connection failure).
-    Atomically advances _proxy_idx to the next configured slot.
-    Returns True if a new slot was activated, False if no more slots available.
-    """
-    global _http_proxy, _proxy_idx, _proxy_lock
-    if _proxy_lock is None:
-        return False
-    async with _proxy_lock:
-        next_idx = _proxy_idx + 1
-        if next_idx >= len(_proxy_list):
-            return False
-        _proxy_idx  = next_idx
-        _http_proxy = _proxy_list[next_idx] if _proxy_list[next_idx] else None
-        try:
-            st.session_state["active_proxy"]     = _proxy_list[next_idx]
-            st.session_state["active_proxy_idx"] = next_idx
-        except Exception:
-            pass
-        return True
+#  To add a free API key:
+#    1. Register at https://www.cryptocompare.com/cryptopian/api-keys
+#    2. In Streamlit → app → ⋮ → Settings → Secrets, add:
+#       CC_API_KEY = "your-key-here"
+#  Without a key, the free public tier still works but at lower rate limits.
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3477,40 +3455,72 @@ def calc_sma_cloud_bs_debug(h: np.ndarray, l: np.ndarray,
 
 async def fetch_klines(sem, sym: str, tf: str, limit: int) -> Optional[np.ndarray]:
     """
-    Direct Bybit Linear klines fetch — bypasses ccxt entirely.
+    v58: CryptoCompare data aggregator fetch — replaces Binance FAPI.
+
+    CryptoCompare (UK/EU-based) is NOT geo-blocked from Streamlit Cloud US servers.
+    Data is sourced with e=BinanceFutures so prices match Binance futures exactly.
 
     Returns float64 ndarray shape (N, 6): [ts_ms, open, high, low, close, volume]
     Returns None on error / empty response.
 
-    Converts ccxt symbol "BTC/USDT:USDT" → Bybit symbol "BTCUSDT".
-    Bybit v5 /market/kline returns rows as [startTime, open, high, low, close, volume, ...]
-    in DESCENDING order — we reverse so index 0 = oldest bar.
-
-    Retries up to 3x on network errors or 429/5xx HTTP status codes.
+    CryptoCompare response format:
+      Data.Data[] = [{time(s), open, high, low, close, volumefrom, ...}, ...]
+      Ordered OLDEST → NEWEST (no reversal needed).
+      time is UNIX seconds → multiply by 1000 for ms.
     """
     global _http_session
-    # ccxt "BTC/USDT:USDT" → "BTCUSDT"
-    base_sym = sym.split(":")[0].replace("/", "")
-    interval = _TF_TO_BYBIT.get(tf, tf)
-    params   = {"category": "linear", "symbol": base_sym, "interval": interval, "limit": limit}
+
+    base_sym = sym.split("/")[0]   # "BTC" from "BTC/USDT:USDT"
+
+    if tf not in _TF_TO_CC:
+        return None
+    endpoint, aggregate = _TF_TO_CC[tf]
+
+    api_key = _get_cc_api_key()
+    params: dict = {
+        "fsym":      base_sym,
+        "tsym":      "USDT",
+        "e":         "BinanceFutures",
+        "limit":     min(limit, 2000),
+        "aggregate": aggregate,
+    }
+    if api_key:
+        params["api_key"] = api_key
+
+    url = f"{_CC_BASE}/{endpoint}"
 
     for _att in range(3):
         try:
             async with sem:
-                async with _http_session.get(_BYBIT_URL, params=params) as resp:
+                async with _http_session.get(url, params=params) as resp:
                     if resp.status == 429 or resp.status >= 500:
                         pass   # fall through to jittered back-off
                     elif resp.status != 200:
                         return None
                     else:
-                        payload = await resp.json(content_type=None)
-                        rows = (payload or {}).get("result", {}).get("list", [])
+                        data = await resp.json(content_type=None)
+                        if data.get("Response") != "Success":
+                            return None
+                        candles = data.get("Data", {}).get("Data", [])
+                        if not candles:
+                            return None
+                        # Filter out zero/empty placeholder candles, build ndarray
+                        rows = [
+                            [
+                                c["time"] * 1000,   # seconds → milliseconds
+                                c["open"],
+                                c["high"],
+                                c["low"],
+                                c["close"],
+                                c["volumefrom"],    # volume in base currency
+                            ]
+                            for c in candles
+                            if c.get("open", 0) != 0 or c.get("close", 0) != 0
+                        ]
                         if not rows:
                             return None
-                        # Bybit returns newest-first; reverse to oldest-first
-                        # Each row: [startTime(ms), open, high, low, close, volume, turnover]
-                        arr = np.array(rows[::-1], dtype=object)[:, :6].astype(np.float64)
-                        return arr
+                        return np.array(rows, dtype=np.float64)
+            # Jittered back-off outside sem so other coroutines can proceed
             await asyncio.sleep(1.0 * (_att + 1) + random.random() * 0.5)
         except (aiohttp.ClientError, asyncio.TimeoutError):
             if _att < 2:
@@ -3672,7 +3682,7 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
     # only need to cover (pivot_win_ts → now) + indicator warmup.
     # v46: _WARMUP raised 60 → 200 — KVO EMA(slow=55) needs ~200 bars to converge.
     _WARMUP   = 200
-    _API_CAP  = 1500
+    _API_CAP  = 2000   # CryptoCompare allows up to 2000 candles per request
     _tf_ms = {
         "1m":  60_000,   "3m":  180_000,  "5m":   300_000,
         "15m": 900_000,  "30m": 1_800_000, "1h":  3_600_000,
@@ -3806,44 +3816,27 @@ async def stage3_worker(ex, sem, sym: str, want_sell: bool, detail: str,
 
 async def run_scan(cfg: dict, progress_callback: Callable) -> dict:
     """
-    Run full 4-stage pipeline over all USDT perpetuals.
-    Calls progress_callback(state_dict) for live UI updates (throttled by caller).
-    v24: multi-proxy fallback — tries each configured proxy in order.
+    Run full 4-stage pipeline over all Binance USDT perpetuals.
+    v58: Markets and OHLCV sourced from CryptoCompare (no proxy, no geo-blocking).
     """
-    proxies = _get_all_proxies()
-
-    # v24: try proxies in order until one successfully loads markets
+    # Load markets from CryptoCompare if not already cached
     if "markets" not in st.session_state:
-        ex, active_proxy, proxy_idx = await _try_load_markets(proxies)
-        st.session_state["markets"]     = ex.markets
-        st.session_state["active_proxy"]     = active_proxy
-        st.session_state["active_proxy_idx"] = proxy_idx
-    else:
-        # Reuse cached markets; reconnect with last known good proxy
-        active_proxy = st.session_state.get("active_proxy", proxies[0] if proxies else "")
-        proxy_idx    = st.session_state.get("active_proxy_idx", 0)
-        ex = _make_exchange_with_proxy(active_proxy)
-        ex.markets = st.session_state["markets"]
-        ex.markets_by_id = {m["id"]: m for m in ex.markets.values()}
+        markets = await _load_binance_futures_markets()
+        st.session_state["markets"] = markets
 
-    # v38 ⚡ Create shared aiohttp session for direct klines fetches.
-    # All concurrent fetch_klines() calls reuse this single session —
-    # zero per-call session overhead, persistent TCP keep-alive.
-    # v56: ThreadedResolver replaces default aiodns — prevents DNS errors on VPN/cloud.
+    ex = _FakeExchange(st.session_state["markets"])
+
+    # Shared aiohttp session for all CryptoCompare kline fetches
     _scan_connector = aiohttp.TCPConnector(
         limit=200, keepalive_timeout=30, ttl_dns_cache=600,
         resolver=aiohttp.ThreadedResolver(),
     )
-    _scan_session   = aiohttp.ClientSession(
+    _scan_session = aiohttp.ClientSession(
         connector=_scan_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
     )
-    global _http_session, _http_proxy, _proxy_list, _proxy_idx, _proxy_lock
+    global _http_session
     _http_session = _scan_session
-    _http_proxy   = active_proxy if active_proxy else None
-    _proxy_list   = proxies
-    _proxy_idx    = proxy_idx
-    _proxy_lock   = asyncio.Lock()
 
     try:
 
@@ -3930,39 +3923,32 @@ async def debug_single(sym_raw: str, cfg: dict, tz_h: float = 0.0, tz_label: str
     sym       = f"{base}/USDT:USDT"
     logs      = []
 
-    # v24: multi-proxy fallback — try each proxy until load_markets succeeds
-    proxies = _get_all_proxies()
-    # v38 ⚡ debug mode creates its own aiohttp session so fetch_klines() works.
-    # (In scan mode, run_scan creates the session; debug runs standalone.)
-    # v56: ThreadedResolver replaces default aiodns — prevents DNS errors on VPN/cloud.
+    # v58: no proxy needed — CryptoCompare session for kline fetches
     _dbg_connector = aiohttp.TCPConnector(
         limit=20, keepalive_timeout=30, ttl_dns_cache=600,
         resolver=aiohttp.ThreadedResolver(),
     )
-    _dbg_session   = aiohttp.ClientSession(
+    _dbg_session = aiohttp.ClientSession(
         connector=_dbg_connector,
         timeout=aiohttp.ClientTimeout(total=60, connect=15, sock_read=30),
     )
-    global _http_session, _http_proxy, _proxy_list, _proxy_idx, _proxy_lock
+    global _http_session
     _http_session = _dbg_session
 
     try:
-        ex, active_proxy, proxy_idx = await _try_load_markets(proxies)
-    except RuntimeError as _proxy_err:
-        logs.append(("Proxy", "❌ FAIL", str(_proxy_err)))
+        markets = await _load_binance_futures_markets()
+        ex = _FakeExchange(markets)
+    except RuntimeError as _err:
+        logs.append(("Market Load", "❌ FAIL", str(_err)))
         if not _dbg_session.closed: await _dbg_session.close()
         await _dbg_connector.close()
         return logs
     try:
         if sym not in ex.markets:
-            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found on Bybit Linear"))
+            logs.append(("Symbol", "❌ FAIL", f"'{sym}' not found in CryptoCompare BinanceFutures pairs"))
             return logs
-        _http_proxy  = active_proxy if active_proxy else None
-        _proxy_list  = proxies
-        _proxy_idx   = proxy_idx
-        _proxy_lock  = asyncio.Lock()
-        logs.append(("Proxy", "✅ PASS",
-            f"Connected via proxy slot {proxy_idx + 1} ({_proxy_label(active_proxy)})"))
+        logs.append(("Data Source", "✅ PASS",
+            f"CryptoCompare BinanceFutures — {len(ex.markets)} USDT pairs loaded"))
 
         sem = asyncio.Semaphore(10)
         pivot_tf  = cfg["pivot_tf"]
@@ -4623,9 +4609,9 @@ def main():
         st.markdown(f"""
 <div class="sc-header">
   <div class="sc-header-left">
-    <h1><i class="ico">&#9889;</i><span class="brand">Bybit Linear</span> <span class="accent">Scanner</span></h1>
+    <h1><i class="ico">&#9889;</i><span class="brand">Binance Futures</span> <span class="accent">Scanner</span></h1>
     <div class="sub">
-      Ultra-Fast
+      CryptoCompare Data
       <span class="dot">&bull;</span>
       Multi-Stage Pipeline
       <span class="dot">&bull;</span>
@@ -4633,7 +4619,7 @@ def main():
     </div>
   </div>
   <div class="sc-header-right">
-    <span class="sc-badge blue">&#128640; v57</span>
+    <span class="sc-badge blue">&#128640; v58</span>
     <span class="sc-badge green">&#10004; 3 Stages</span>
     <span class="sc-tz-badge">&#127758; {tz_short}</span>
     <span class="sc-tz-badge" style="background:rgba(0,180,216,0.07);color:var(--blue);border-color:rgba(0,180,216,0.28);">&#128336; {time_fmt.upper()}</span>
@@ -4755,7 +4741,7 @@ def main():
                 def _tg_test_thread():
                     ts = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
                     _tg_ok[0] = _tg_send_sync(
-                        f"✅ <b>Bybit Streamlit Scanner v57</b>\n"
+                        f"✅ <b>Binance Futures Scanner v58</b>\n"
                         f"🕐 {ts}\n"
                         f"Telegram alerts are working!"
                     )
@@ -4772,61 +4758,32 @@ def main():
     # ══ TAB 1: FULL SCAN ══════════════════════════════════════════════
     with tab_scan:
 
-        # ── Proxy status banner ───────────────────────────────────────
-        _all_proxies  = _get_all_proxies()
-        _active_proxy = st.session_state.get("active_proxy", "")
-        # Use live module-level _proxy_idx if a scan has run; otherwise default
-        # to slot 0 (first configured slot) as the presumed active slot.
-        _active_idx = _proxy_idx if _proxy_list else st.session_state.get("active_proxy_idx", 0)
-
-        if _all_proxies:
-            # Build slot chips: green = active, grey = standby
-            _slot_chips = []
-            for _i, _p in enumerate(_all_proxies):
-                _lbl   = _proxy_label(_p)
-                _is_active = (_i == _active_idx)
-                _chip_style = (
-                    "background:rgba(0,230,118,0.12);color:#00e676;"
-                    "border:1px solid rgba(0,230,118,0.35);"
-                ) if _is_active else (
-                    "background:rgba(255,255,255,0.04);color:#6a6a88;"
-                    "border:1px solid rgba(255,255,255,0.08);"
-                )
-                _dot = "🟢" if _is_active else "⚪"
-                _active_label = "&nbsp;<b style=\"color:#00e676\">ACTIVE</b>" if _is_active else " STANDBY"
-                _slot_chips.append(
-                    f'<span style="display:inline-flex;align-items:center;gap:5px;'
-                    f'padding:3px 10px;border-radius:20px;font-family:var(--mono);'
-                    f'font-size:0.72rem;{_chip_style}">' 
-                    f'{_dot} Slot {_i+1}: {_lbl}'
-                    f'{_active_label}'
-                    f'</span>'
-                )
-            _chips_html = "&nbsp;".join(_slot_chips)
-            st.markdown(
-                f'<div class="sc-proxy-ok" style="display:flex;align-items:center;'
-                f'flex-wrap:wrap;gap:6px;">'
-                f'&#128274;&nbsp;<b>{len(_all_proxies)} proxy slot(s) configured</b>'
-                f'&nbsp;&mdash;&nbsp;{_chips_html}'
-                f'&nbsp;&middot;&nbsp;<span style="color:#5a8a5a;font-size:0.78rem">'
-                f'auto-fallback enabled</span></div>',
-                unsafe_allow_html=True)
-        else:
-            st.markdown(
-                '<div class="sc-proxy-err">&#128683; No proxy configured. '
-                'Add <code>PROXY_URL</code> to Streamlit Secrets.</div>',
-                unsafe_allow_html=True)
-            with st.expander("How to set up a free proxy (3 min)"):
-                st.markdown("""
-1. Register at **https://proxy2.webshare.io** (free, no credit card)
-2. Go to **Proxy List** → copy as `Username:Password@host:port`
-3. In Streamlit → your app → **⋮ → Settings → Secrets**, add:
-```toml
-PROXY_URL   = "http://user1:pass1@p.webshare.io:80"
-PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
-```
-4. Save — app restarts in ~30s. Add up to 4 slots for auto-fallback.
-""")
+        # ── Data source banner ────────────────────────────────────────
+        _n_markets = len(st.session_state.get("markets", {}))
+        _cc_key_set = bool(_get_cc_api_key())
+        _key_chip = (
+            '<span style="background:rgba(0,230,118,0.12);color:#00e676;'
+            'border:1px solid rgba(0,230,118,0.3);padding:2px 8px;border-radius:12px;'
+            'font-size:0.72rem;font-family:var(--mono)">🔑 API key set</span>'
+            if _cc_key_set else
+            '<span style="background:rgba(255,202,40,0.1);color:#ffca28;'
+            'border:1px solid rgba(255,202,40,0.25);padding:2px 8px;border-radius:12px;'
+            'font-size:0.72rem;font-family:var(--mono)">⚠ No API key — free tier</span>'
+        )
+        _pairs_chip = (
+            f'<span style="background:rgba(0,180,216,0.1);color:#00b4d8;'
+            f'border:1px solid rgba(0,180,216,0.25);padding:2px 8px;border-radius:12px;'
+            f'font-size:0.72rem;font-family:var(--mono)">📊 {_n_markets} pairs cached</span>'
+            if _n_markets else ""
+        )
+        st.markdown(
+            f'<div class="sc-proxy-ok" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;">'
+            f'📡&nbsp;<b>Data: CryptoCompare → BinanceFutures</b>'
+            f'&nbsp;&mdash;&nbsp;{_key_chip}'
+            + (f'&nbsp;{_pairs_chip}' if _pairs_chip else '')
+            + f'&nbsp;&middot;&nbsp;<span style="color:#5a8a5a;font-size:0.78rem">'
+            f'EU/UK servers · no proxy needed</span></div>',
+            unsafe_allow_html=True)
 
         # ── Mode + Timeframes row ─────────────────────────────────────
         mode_key = st.session_state["scan_mode_sel"]
@@ -4940,7 +4897,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                 st.session_state["auto_loop_5m"] = False
         with al_c4:
             if st.button("&#128260;", key="clear_mkts", width="stretch",
-                         help="Refresh market list — clears cache and reloads from Bybit"):
+                         help="Refresh market list — clears cache and reloads from Binance"):
                 st.session_state.pop("markets", None)
                 st.rerun()
 
@@ -5021,7 +4978,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
             })
             t0 = time.time()
 
-            prog_bar = st.progress(0.0, text="Connecting to Bybit…")
+            prog_bar = st.progress(0.0, text="Connecting to Binance…")
             ctr_ph   = st.empty()
 
             def update_ui(state: dict):
@@ -5128,7 +5085,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
                     csv_bytes = csv_buf.getvalue().encode("utf-8")
 
                     txt_buf = io.StringIO()
-                    txt_buf.write(f"BYBIT FUTURES SCANNER  —  {mode_key.upper()} MODE\n")
+                    txt_buf.write(f"BINANCE FUTURES SCANNER  —  {mode_key.upper()} MODE\n")
                     txt_buf.write(f"Scan Time : {timestamp}\n")
                     txt_buf.write(f"Timezone  : {tz_key}\n")
                     txt_buf.write(f"Time Fmt  : {time_fmt.upper()}\n")
@@ -5393,7 +5350,7 @@ PROXY_URL_2 = "http://user2:pass2@p.webshare.io:80"
 
                     # TXT bytes
                     _tbuf = io.StringIO()
-                    _tbuf.write(f"BYBIT FUTURES SCANNER  —  {mode_key_r.upper()} MODE\n")
+                    _tbuf.write(f"BINANCE FUTURES SCANNER  —  {mode_key_r.upper()} MODE\n")
                     _tbuf.write(f"Scan Time : {_exp_timestamp}\n")
                     _tbuf.write(f"Timezone  : {r_tz_key}\n")
                     _tbuf.write(f"Time Fmt  : {r_time_fmt.upper()}\n")
